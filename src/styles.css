@@ -1,0 +1,182 @@
+:root {
+  /* Floor palette — fixed in both themes so equipment colours stay readable on top:
+     turf (near black) < tile (dark grey) < dead space (lightest grey, white hatch). */
+  --turf: #0c0c0d;
+  --tile: #232326;
+  --dead: #8d8d92;
+  --dead-hatch: rgb(255 255 255 / .7);
+  --eq-barbell: #f2a62b;
+  --eq-pull: #35b8a8;
+  --eq-pullup: #9a8cf5;
+  --grid: rgb(255 255 255 / .16);
+  --grid-soft: rgb(255 255 255 / .08);
+  --bg: #f6f6f4;
+  --panel: #ffffff;
+  --ink: #1b1b1a;
+  --muted: #6f6f6a;
+  --line: #d9d9d3;
+  --accent: #e4572e;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151514;
+    --panel: #1f1f1d;
+    --ink: #ecece8;
+    --muted: #96968f;
+    --line: #55554d;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.page { width: min(60rem, calc(100% - 2rem)); margin: 2rem auto; }
+h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
+.sub { margin: 0 0 1.25rem; color: var(--muted); }
+
+.editor { display: grid; gap: 1rem; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: .75rem 1.25rem; align-items: center; }
+.group { display: flex; gap: .35rem; align-items: center; }
+.btn {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .45rem .7rem; font: inherit; font-size: .875rem; color: var(--ink);
+  background: var(--panel); border: 1px solid var(--line); border-radius: .5rem; cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: var(--muted); }
+.btn.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+kbd {
+  font: inherit; font-size: .7rem; color: var(--muted);
+  border: 1px solid var(--line); border-radius: .25rem; padding: 0 .3rem;
+}
+.swatch { width: .8rem; height: .8rem; border-radius: .15rem; border: 1px solid var(--line); }
+.swatch.dead { background: var(--dead); }
+.swatch.open, .swatch.tile { background: var(--tile); }
+.swatch.turf { background: var(--turf); }
+
+/* label gutter + grid */
+.board {
+  display: grid; grid-template-columns: 1.5rem 1fr; grid-template-rows: 1.5rem 1fr;
+  background: var(--panel); border: 1px solid var(--line); border-radius: .75rem; padding: .75rem .75rem .75rem .5rem;
+}
+.col-labels, .row-labels { display: grid; font-size: .7rem; color: var(--muted); user-select: none; }
+.col-labels { grid-column: 2; grid-template-columns: repeat(16, 1fr); text-align: center; align-items: end; padding-bottom: .2rem; }
+.row-labels { grid-row: 2; grid-template-rows: repeat(12, 1fr); align-items: center; padding-right: .3rem; text-align: right; }
+
+.grid {
+  display: grid; width: 100%; position: relative;
+  border: 2px solid var(--ink); background: var(--tile);
+  touch-action: none; user-select: none; cursor: crosshair;
+}
+.cell { background: var(--tile); }
+.cell.turf { background-color: var(--turf); }
+.cell.dead {
+  background-color: var(--dead);
+  background-image: repeating-linear-gradient(45deg, transparent 0 6px, var(--dead-hatch) 6px 8px);
+  background-attachment: fixed; /* one continuous pattern across neighbouring dead cells */
+}
+/* whole-metre lines, always visible; half-metre lines only in 0.5 m mode */
+.meter-lines {
+  position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: calc(100% / 16) calc(100% / 12);
+}
+.grid.fine .meter-lines {
+  background-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px),
+    linear-gradient(to right, var(--grid-soft) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-soft) 1px, transparent 1px);
+  background-size:
+    calc(100% / 16) calc(100% / 12), calc(100% / 16) calc(100% / 12),
+    calc(100% / 32) calc(100% / 24), calc(100% / 32) calc(100% / 24);
+}
+.hover-box { position: absolute; outline: 2px solid var(--accent); outline-offset: -2px; pointer-events: none; }
+
+.status { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; font-size: .85rem; color: var(--muted); }
+.status b { color: var(--ink); }
+.status .hint { margin-left: auto; }
+
+/* fixed equipment, drawn above the cells */
+.fixed-layer { position: absolute; inset: 0; pointer-events: none; }
+.fixed-eq { position: absolute; display: flex; outline: 2px solid var(--ink); outline-offset: -1px; background: var(--tile); }
+.station {
+  flex: 1; display: grid; place-items: center; min-width: 0;
+  font-size: .7rem; font-weight: 700; color: #111; border-right: 1px solid rgb(0 0 0 / .45);
+}
+.station:last-child { border-right: 0; }
+.station.barbell, .station-dot.barbell { background: var(--eq-barbell); }
+.station.pull, .station-dot.pull { background: var(--eq-pull); }
+.station.pullup, .station-dot.pullup { background: var(--eq-pullup); }
+
+.legend { display: grid; gap: .35rem; font-size: .85rem; color: var(--muted); }
+.legend-row { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; align-items: center; }
+.legend-row b { color: var(--ink); }
+.legend-item { display: inline-flex; align-items: center; gap: .35rem; }
+.station-dot { width: .8rem; height: .8rem; border-radius: .15rem; display: inline-block; }
+
+/* movable equipment */
+.grid.equip { cursor: default; }
+.item {
+  position: absolute; display: grid; place-items: center; overflow: hidden;
+  background: var(--c); color: #111; font-size: .7rem; font-weight: 700;
+  text-align: center; line-height: 1.15; /* wrapped labels (e.g. "Box / 2x") stay centred */
+  outline: 1px solid rgb(0 0 0 / .6); outline-offset: -1px;
+}
+.item.selected { outline: 2px solid #fff; outline-offset: -2px; z-index: 1; }
+.item.conflict {
+  outline: 2px solid #ff3b3b; outline-offset: -2px;
+  background-image: repeating-linear-gradient(-45deg, transparent 0 5px, rgb(255 59 59 / .55) 5px 8px);
+}
+.item.ghost { opacity: .6; outline: 2px dashed #fff; outline-offset: -2px; }
+.item.ghost.conflict { outline-color: #ff3b3b; }
+.warn { color: #ff6b6b; }
+
+.palette { display: flex; flex-wrap: wrap; gap: .4rem; }
+.chip {
+  display: inline-flex; align-items: center; gap: .45rem; padding: .35rem .6rem;
+  font: inherit; font-size: .8rem; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: .5rem; cursor: pointer;
+}
+.chip small { color: var(--muted); font-size: .72rem; }
+.chip:hover:not(:disabled) { border-color: var(--muted); }
+.chip.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.chip:disabled { opacity: .45; cursor: default; }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip-dot { width: .8rem; height: .8rem; border-radius: .15rem; border: 1px solid rgb(0 0 0 / .4); flex: none; }
+
+/* stored equipment (marked as put away): duller colour, not transparent, so stacks don't brighten */
+.item.stored { filter: saturate(.3) brightness(.7); outline: 1px dashed rgb(255 255 255 / .6); outline-offset: -2px; }
+
+/* upright units are narrow slivers: stand the label on its side */
+.item.upright { font-size: .6rem; }
+.item.upright span { writing-mode: vertical-rl; }
+
+/* overhead equipment: outlined, see-through, never blocks what's underneath */
+.overhead { position: absolute; border: 2px dashed #fff; background: rgb(255 255 255 / .22); pointer-events: none; z-index: 2; }
+.overhead-dot { width: .8rem; height: .8rem; border-radius: .15rem; display: inline-block; border: 2px dashed #fff; background: rgb(255 255 255 / .22); }
+
+/* zones (rig / turf / mat): faint names and dividers behind everything */
+.zone { position: absolute; left: 0; right: 0; pointer-events: none; border-top: 1px dashed rgb(255 255 255 / .22); }
+.zone:first-child { border-top: 0; }
+.zone span { position: absolute; left: 50%; transform: translate(-50%, -50%); font-size: 1.6rem; font-weight: 800; letter-spacing: .35em; text-transform: uppercase; color: rgb(255 255 255 / .1); }
+
+/* safe areas: space claimed by equipment in use */
+.safe { position: absolute; background: rgb(90 209 122 / .16); border: 1px dashed rgb(90 209 122 / .7); pointer-events: none; }
+.item.warn:not(.conflict) { outline: 2px solid #ffb020; outline-offset: -2px; }
+.tight { color: #ffb020; }
+.item.warn { color: #111; } /* .warn is also the red text colour of the status bar; keep item labels dark */
+
+/* rig stations in use */
+.station.on { box-shadow: inset 0 0 0 2px #fff; }
+.btn.partial { border-style: dashed; border-color: var(--accent); }
