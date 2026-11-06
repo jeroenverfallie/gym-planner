@@ -27,6 +27,13 @@ If a count here and the code disagree, fix the one that's wrong and tell the use
 
 ## Equipment inventory
 
+**Permanent equipment.** Everything the gym owns (bikes, rowers, SkiErgs, runners, sleds, plyo boxes, and the rack
+and wall ball targets) is **always on the floor plan** and can't be deleted: it has to be somewhere. When a
+workout doesn't use it, it stays on the plan **stored** (the dulled items along the walls); a workout marks what it
+uses as in use. Only **benches, soft mats and workout spaces** are added and removed per workout. In the floor
+editor the permanent items have no "place" buttons and can't be removed; if a saved layout is missing one, it is
+put back automatically.
+
 "Max at once" is the most people who can use that item at the same time. Never plan more than this per workout block.
 
 ### Cardio machines (one person each)
@@ -52,6 +59,21 @@ If a count here and the code disagree, fix the one that's wrong and tell the use
 | Barbell | 4 | 4 | |
 | Bench | 8 | 8 | 1.2 × 0.4 m. |
 | Soft mat | 8 | 8 | Floor work. Size estimated at 1.8 × 0.6 m. |
+
+### Workout spaces (markers, not equipment)
+
+A **workout space** marks floor that must stay clear for a movement. It is placed in the floor editor like
+equipment, but it is only a marker: it doesn't count toward equipment totals, and nothing else may stand in it
+(overlapping equipment is a conflict). Plan one per person who needs it. Three sizes (width × depth; rotatable):
+
+| Size | Dimensions | For |
+|---|---|---|
+| **L** | 1.5 × 2.5 m | Movements that **travel**: broad jumps, lunges, walking lunges, bear crawls. |
+| **M** | 1.2 × 2.0 m | **Floor work and burpees**: burpees, push-ups, planks, sit-ups, mountain climbers, leg curls. |
+| **S** | 1.0 × 1.0 m | **Stationary standing work**: squats, kettlebell swings, goblet squats, thrusters, presses, curls, step-ups. |
+
+Pick the smallest space the movement allows, so the zone can hold more people or spread out more. All sizes are
+estimates for an average person.
 
 ### Free weights (no fixed count: sized by people)
 
@@ -124,6 +146,10 @@ rest is stored.
 5. **50-50**: **12 people on cardio equipment (Mat side)** and **12 people lifting (Rig side)**. The **Turf is
    interchangeable**: either half can use it (e.g. sleds). The two halves rotate or work independently.
 
+**Text fields in the planner (what a workout's text is organised by):** Lift and Lift & Rush have one field per
+zone (**Rig, Turf, Mat**); **Hyrox** (and Hyrox + outside run) has **one** field covering the whole plan; **50-50**
+has two, **Strength** and **Cardio**.
+
 ## Rules for building workouts
 
 0. **Max 24 people in the room**, in every workout type.
@@ -143,6 +169,17 @@ rest is stored.
    it stored. Don't rely on equipment that isn't listed.
 8. **Don't invent equipment.** If a workout needs something not on this list, ask the user first.
 9. **Don't prescribe exact loads.** Group sessions: the movement matters, not the weight.
+10. **Partners side by side.** Every zone is split in two: the people work as **partners next to each other**,
+    one at each station, then swap. Lay stations out alternating, e.g. on the Mat side
+    `Soft mat – Workout space – Soft mat – Workout space …`, on the turf `Bench – Space – Bench – Space …`, and on the rig `Barbell bay – Space – Barbell bay – Space …`
+    (the partner of each lifter has a space beside the bay, e.g. in front of the pull-up bays between them).
+11. **Always use the space optimally.** Spread stations and workout spaces **evenly across the full usable width
+    of their zone** with equal gaps, as far apart as the zone allows, instead of bunching them. Gaps must never be
+    smaller than the safe areas need. Use the zone's depth too (centre rows in it). Keep clear of stored equipment
+    and the dead space.
+12. **`INTO` means two stations, half and half.** In a zone with `INTO`, half the people (e.g. 4 of 8) do
+    the first station while the other half do the second, then they switch. Count equipment per station, not per
+    zone: the zone needs only half its people's worth at each. See [example-workouts.md](example-workouts.md).
 
 ## Still unconfirmed
 

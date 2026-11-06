@@ -1,4 +1,4 @@
-import type { Placed } from '#/lib/equipment'
+import { isPermanent, type Placed } from '#/lib/equipment'
 import { COLS, SUB, type Floor, createFloor, paint, rectPoints } from '#/lib/floor'
 
 /**
@@ -66,6 +66,16 @@ const DEFAULT_ITEMS: Placed[] = [
   { id: 'plyo-7', type: 'plyo', x: 0, y: 5.93, rotated: true, stored: true },
   { id: 'plyo-8', type: 'plyo', x: 0.01, y: 5.14, rotated: true, stored: true },
 ]
+
+/**
+ * Permanent equipment must always be on the plan. If a saved layout is missing any (an older save), put the
+ * default copy back, stored, where the default has it.
+ */
+export function restoreMissing(items: Placed[]): Placed[] {
+  const have = new Set(items.map((i) => i.id))
+  const missing = DEFAULT_ITEMS.filter((d) => isPermanent(d.type) && !have.has(d.id)).map((d) => ({ ...d }))
+  return missing.length ? [...items, ...missing] : items
+}
 
 export function defaultFloor(): Floor {
   const floor = createFloor()

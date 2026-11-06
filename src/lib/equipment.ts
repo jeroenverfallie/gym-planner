@@ -73,7 +73,7 @@ export function countStations(e: FixedEquipment): Record<StationKind, number> {
  * Footprints are the machine only — user space and lane clearance come later.
  * ------------------------------------------------------------------------- */
 
-export type EquipmentTypeId = 'echo-bike' | 'rowerg' | 'skierg' | 'bikeerg' | 'runner' | 'sled' | 'plyo' | 'bench' | 'softmat'
+export type EquipmentTypeId = 'echo-bike' | 'rowerg' | 'skierg' | 'bikeerg' | 'runner' | 'sled' | 'plyo' | 'bench' | 'softmat' | 'space' | 'space-m' | 'space-s'
 
 /**
  * Safe area around a unit in use: `ends` beyond the short sides, `sides` beyond the long sides (before rotation).
@@ -97,6 +97,13 @@ export type EquipmentType = {
   restsOn?: EquipmentTypeId
   /** Space needed around the unit while it's in use (metres, estimates for an average person). */
   safe: Safe
+  /**
+   * Always on the floor plan (stored or in use) and never deletable: the gym owns these, so they have to be
+   * somewhere. Only benches, soft mats and workout spaces are added and removed per workout.
+   */
+  permanent?: boolean
+  /** A planning marker, not a machine: drawn as an outline and left out of the equipment totals. */
+  marker?: boolean
   /** Units of this type can stack on each other (same spot) up to this many high. */
   stackMax?: number
   /**
@@ -110,15 +117,15 @@ export type EquipmentType = {
 const SKIERG = { length: 1.27, depth: 0.6 }
 
 export const EQUIPMENT_TYPES: EquipmentType[] = [
-  { id: 'echo-bike', safe: { ends: 0.3, sides: 0.4 }, name: 'Rogue Echo Bike', short: 'Echo', color: '#ff6b57', length: 1.4, depth: 0.75, count: 2 },
-  { id: 'rowerg', safe: { ends: 0.15, sides: 0.3 }, name: 'Concept2 RowErg', short: 'Row', color: '#4f9dff', length: 2.44, depth: 0.61, count: 4, restsOn: 'skierg',
+  { id: 'echo-bike', permanent: true, safe: { ends: 0.3, sides: 0.4 }, name: 'Rogue Echo Bike', short: 'Echo', color: '#ff6b57', length: 1.4, depth: 0.75, count: 2 },
+  { id: 'rowerg', permanent: true, safe: { ends: 0.15, sides: 0.3 }, name: 'Concept2 RowErg', short: 'Row', color: '#4f9dff', length: 2.44, depth: 0.61, count: 4, restsOn: 'skierg',
     // Upright: as wide as the SkiErg's short side, half its long side in the other dimension.
     upright: { length: SKIERG.length / 2, depth: SKIERG.depth } },
-  { id: 'skierg', safe: { ends: 0.3, sides: 0.4 }, name: 'Concept2 SkiErg', short: 'Ski', color: '#b6e04a', length: SKIERG.length, depth: SKIERG.depth, count: 4 },
-  { id: 'bikeerg', safe: { ends: 0.3, sides: 0.4 }, name: 'Concept2 BikeErg', short: 'Bike', color: '#ff7ac8', length: 1.22, depth: 0.61, count: 4 },
-  { id: 'runner', safe: { ends: 0.6, sides: 0.3 }, name: 'Rogue Curved Runner', short: 'Run', color: '#ececf1', length: 1.63, depth: 0.91, count: 2 },
+  { id: 'skierg', permanent: true, safe: { ends: 0.3, sides: 0.4 }, name: 'Concept2 SkiErg', short: 'Ski', color: '#b6e04a', length: SKIERG.length, depth: SKIERG.depth, count: 4 },
+  { id: 'bikeerg', permanent: true, safe: { ends: 0.3, sides: 0.4 }, name: 'Concept2 BikeErg', short: 'Bike', color: '#ff7ac8', length: 1.22, depth: 0.61, count: 4 },
+  { id: 'runner', permanent: true, safe: { ends: 0.6, sides: 0.3 }, name: 'Rogue Curved Runner', short: 'Run', color: '#ececf1', length: 1.63, depth: 0.91, count: 2 },
   {
-    id: 'plyo', safe: { ends: 0.6, sides: 0.6 },
+    id: 'plyo', permanent: true, safe: { ends: 0.6, sides: 0.6 },
     name: 'Stride Plyo Box',
     short: 'Box',
     color: '#d2a679',
@@ -128,14 +135,54 @@ export const EQUIPMENT_TYPES: EquipmentType[] = [
     count: 8,
     stackMax: 3,
   },
-  { id: 'sled', safe: { ends: 0, sides: 0.35, lane: 11.5 }, name: 'HYROX Sled', short: 'Sled', color: '#ffd23f', length: 1.02, depth: 0.6, count: 3 },
+  { id: 'sled', permanent: true, safe: { ends: 0, sides: 0.35, lane: 11.5 }, name: 'HYROX Sled', short: 'Sled', color: '#ffd23f', length: 1.02, depth: 0.6, count: 3 },
   // 1.2 × 0.4 m. Safe area: dumbbell work either side.
   { id: 'bench', safe: { ends: 0.4, sides: 0.6 }, name: 'Bench', short: 'Bench', color: '#b8a1ff', length: 1.2, depth: 0.4, count: 8 },
   // Size is an estimate (a standard exercise mat); floor work around it.
   { id: 'softmat', safe: { ends: 0.3, sides: 0.3 }, name: 'Soft mat', short: 'Soft', color: '#6ee7b7', length: 1.8, depth: 0.6, count: 8 },
+  // Workout spaces: floor that must stay clear for a movement. The space itself is the safe area, so it adds no
+  // margin: nothing else may stand in it. Width (x) × depth (y); rotate for the other way round.
+  // L (the original): movements that travel: broad jumps, lunges, walking lunges, bear crawls.
+  {
+    id: 'space',
+    safe: { ends: 0, sides: 0 },
+    name: 'Workout space L',
+    short: 'Space L',
+    color: '#ffffff',
+    length: 1.5,
+    depth: 2.5,
+    count: 24,
+    marker: true,
+  },
+  // M: floor work and burpees: burpees (a person stretched out plus the hop back), push-ups, planks, sit-ups,
+  // mountain climbers, leg curls. About a person's length (1.8 m) plus a little, and arm span wide.
+  {
+    id: 'space-m',
+    safe: { ends: 0, sides: 0 },
+    name: 'Workout space M',
+    short: 'Space M',
+    color: '#ffffff',
+    length: 1.2,
+    depth: 2.0,
+    count: 24,
+    marker: true,
+  },
+  // S: stationary standing work: squats, kettlebell swings, goblet squats, thrusters, presses, curls, step-ups.
+  {
+    id: 'space-s',
+    safe: { ends: 0, sides: 0 },
+    name: 'Workout space S',
+    short: 'Space S',
+    color: '#ffffff',
+    length: 1.0,
+    depth: 1.0,
+    count: 24,
+    marker: true,
+  },
 ]
 
 export const typeOf = (id: EquipmentTypeId) => EQUIPMENT_TYPES.find((t) => t.id === id)!
+export const isPermanent = (id: EquipmentTypeId) => !!typeOf(id).permanent
 export const isTypeId = (id: unknown): id is EquipmentTypeId => EQUIPMENT_TYPES.some((t) => t.id === id)
 
 /** A piece of equipment placed on the floor. x/y = top-left corner in metres. */

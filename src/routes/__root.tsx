@@ -1,4 +1,4 @@
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
+import { HeadContent, Link, Scripts, createRootRoute } from '@tanstack/react-router'
 
 import appCss from '../styles.css?url'
 
@@ -33,6 +33,15 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <HeadContent />
       </head>
       <body>
+        <nav className="topnav" aria-label="Main">
+          <b className="brand">Joey's</b>
+          <Link to="/" activeOptions={{ exact: true }} activeProps={{ className: 'on' }}>
+            Planner
+          </Link>
+          <Link to="/workouts" activeProps={{ className: 'on' }}>
+            Catalogue
+          </Link>
+        </nav>
         {children}
 
         <Scripts />

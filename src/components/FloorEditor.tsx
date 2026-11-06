@@ -14,12 +14,27 @@ import {
   type Placed,
   countStations,
   footprint,
+  isPermanent,
   sizeOf,
   typeOf,
 } from '#/lib/equipment'
-import { defaultFloor } from '#/lib/default-floor'
+import { defaultFloor, restoreMissing } from '#/lib/default-floor'
 import { hasConflict, restingOn, safetyWarnings, snapToStack, stackSize } from '#/lib/placement'
+import { useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  FOCUSES,
+  WORKOUT_TYPES,
+  type Focus,
+  type Workout,
+  type WorkoutType,
+  newWorkoutId,
+  noteFields,
+  planOf,
+  readWorkouts,
+  typeInfo,
+  upsertWorkout,
+} from '#/lib/workouts'
 import {
   type Brush,
   type Floor,
@@ -50,6 +65,11 @@ type Step = 1 | 2
 type Metres = { x: number; y: number }
 
 // v2: current save format (v1 saves are ignored).
+const NOTES_KEY = 'joeys:workout-notes:v1'
+const META_KEY = 'joeys:current-workout:v1'
+
+type Meta = { id: string | null; name: string; type: WorkoutType; focus: Focus }
+const EMPTY_META: Meta = { id: null, name: '', type: 'lift', focus: 'lower' }
 const STORAGE_KEY = 'joeys:floor:v2'
 
 const SHAPES: { id: Shape; label: string; key: string }[] = [
@@ -71,7 +91,8 @@ const RIG_KINDS: { kind: StationKind; label: string }[] = [
   { kind: 'pullup', label: 'Pull-ups' },
 ]
 
-const TOTAL_EQUIPMENT = EQUIPMENT_TYPES.reduce((n, t) => n + t.count, 0)
+/** Workout spaces are markers, not equipment: they don't count toward the equipment totals. */
+const TOTAL_EQUIPMENT = EQUIPMENT_TYPES.filter((t) => !t.marker).reduce((n, t) => n + t.count, 0)
 
 const rowLabel = (r: number) => String.fromCharCode(65 + r)
 const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1))
@@ -89,7 +110,8 @@ const clampPos = (x: number, y: number, w: number, h: number) => ({
   y: toCm(Math.min(HEIGHT_M - h, Math.max(0, y))),
 })
 
-export function FloorEditor() {
+export function FloorEditor({ loadId }: { loadId?: string }) {
+  const navigate = useNavigate()
   const [floor, setFloor] = useState<Floor>(() => defaultFloor())
   const [past, setPast] = useState<Floor[]>([])
   const [future, setFuture] = useState<Floor[]>([])
@@ -106,6 +128,11 @@ export function FloorEditor() {
   const [armedStored, setArmedStored] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
+  // The workout text for each zone, typed in the notes column beside the plan.
+  const [notes, setNotes] = useState<Record<string, string>>({})
+  // The workout being edited (id once it has been saved to the catalogue), and a short confirmation message.
+  const [meta, setMeta] = useState<Meta>(EMPTY_META)
+  const [flash, setFlash] = useState('')
 
   const gridRef = useRef<HTMLDivElement>(null)
   // Stroke/drag state live in refs: they change on every pointer move and must not trigger renders themselves.
@@ -115,10 +142,35 @@ export function FloorEditor() {
 
   /* ---- persistence (client only, so SSR markup stays stable) ---- */
   useEffect(() => {
-    const saved = deserialize(localStorage.getItem(STORAGE_KEY), defaultFloor().surface)
-    if (saved) setFloor(saved)
+    // Opened from the catalogue (?workout=id): load that workout instead of the autosaved one.
+    const w = loadId ? readWorkouts().find((x) => x.id === loadId) : undefined
+    const wf = w ? planOf(w) : null
+    if (w && wf) {
+      setFloor({ ...wf, items: restoreMissing(wf.items) })
+      setNotes({ ...w.notes })
+      setMeta({ id: w.id, name: w.name, type: w.type, focus: w.focus ?? 'lower' })
+    } else {
+      const saved = deserialize(localStorage.getItem(STORAGE_KEY), defaultFloor().surface)
+      if (saved) setFloor({ ...saved, items: restoreMissing(saved.items) })
+      try {
+        const n = JSON.parse(localStorage.getItem(NOTES_KEY) ?? '{}')
+        if (n && typeof n === 'object') setNotes(n)
+        const m = JSON.parse(localStorage.getItem(META_KEY) ?? 'null')
+        if (m && typeof m.name === 'string') setMeta({ ...EMPTY_META, ...m })
+      } catch {
+        /* ignore unreadable notes */
+      }
+    }
+    if (loadId) navigate({ to: '/', search: {}, replace: true }) // the id has been used: keep reloads clean
     setLoaded(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  useEffect(() => {
+    if (loaded) localStorage.setItem(META_KEY, JSON.stringify(meta))
+  }, [meta, loaded])
+  useEffect(() => {
+    if (loaded) localStorage.setItem(NOTES_KEY, JSON.stringify(notes))
+  }, [notes, loaded])
   useEffect(() => {
     if (loaded) localStorage.setItem(STORAGE_KEY, serialize(floor))
   }, [floor, loaded])
@@ -161,6 +213,39 @@ export function FloorEditor() {
     const allOn = idx.every((i) => floor.active.rig.includes(i))
     setRig(allOn ? floor.active.rig.filter((i) => !idx.includes(i)) : withStations(floor.active.rig, idx))
   }
+  /* ---- the workout catalogue ---- */
+  const say = (msg: string) => {
+    setFlash(msg)
+    window.setTimeout(() => setFlash(''), 2500)
+  }
+  const saveWorkout = (asNew: boolean) => {
+    const name = meta.name.trim()
+    if (!name) return
+    const isNew = asNew || !meta.id
+    const w: Workout = {
+      id: isNew ? newWorkoutId() : meta.id!,
+      name,
+      type: meta.type,
+      focus: typeInfo(meta.type).hasFocus ? meta.focus : null,
+      notes: Object.fromEntries(Object.entries(notes).filter(([, v]) => typeof v === 'string')),
+      plan: serialize(floor),
+      savedAt: Date.now(),
+    }
+    upsertWorkout(w)
+    setMeta((m) => ({ ...m, id: w.id, name }))
+    say(isNew ? 'Saved to the catalogue' : 'Workout updated')
+  }
+  const newWorkout = () => {
+    const dirty = !sameCells(floor, defaultFloor()) || Object.values(notes).some(Boolean) || !!meta.name
+    if (dirty && !window.confirm('Start a new workout? Unsaved changes to the current one will be lost.')) return
+    setFloor(defaultFloor())
+    setPast([])
+    setFuture([])
+    setNotes({})
+    setMeta(EMPTY_META)
+    setSelectedId(null)
+    setArmed(null)
+  }
   const clearAll = () => commit(paint(floor, rectPoints({ col: 0, row: 0 }, { col: COLS - 1, row: ROWS - 1 }), 'open')) // dead space only; surfaces stay
   const fillAll = () => commit(paint(floor, rectPoints({ col: 0, row: 0 }, { col: COLS - 1, row: ROWS - 1 }), 'dead'))
 
@@ -192,12 +277,13 @@ export function FloorEditor() {
     commit({ ...floor, items: floor.items.map((i) => (i.id === selected.id ? { ...i, stored: !i.stored } : i)) })
   }
   const removeSelected = () => {
-    if (!selectedId) return
+    // Permanent equipment (everything but benches, soft mats and workout spaces) has to be somewhere: never deletable.
+    if (!selectedId || (selected && isPermanent(selected.type))) return
     commit({ ...floor, items: floor.items.filter((i) => i.id !== selectedId) })
     setSelectedId(null)
   }
   const removeAllEquipment = () => {
-    commit({ ...floor, items: [] })
+    commit({ ...floor, items: floor.items.filter((i) => isPermanent(i.type)) })
     setSelectedId(null)
   }
   const armType = (id: EquipmentTypeId) => {
@@ -212,6 +298,9 @@ export function FloorEditor() {
   /* ---- keyboard shortcuts (handler kept in a ref so it always sees fresh state) ---- */
   const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {})
   onKeyRef.current = (e) => {
+    // Typing in a notes box must not trigger tool shortcuts (or undo of the plan).
+    const t = e.target as HTMLElement | null
+    if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return
     const mod = e.metaKey || e.ctrlKey
     const k = e.key.toLowerCase()
     if (mod && k === 'z') {
@@ -362,9 +451,12 @@ export function FloorEditor() {
   const dead = countDead(shown)
   const deadM2 = dead * CELL_AREA
   const turfM2 = countTurf(shown) * CELL_AREA
+  const spaceCount = shown.items.filter((i) => typeOf(i.type).marker).length
+  const equipmentCount = shown.items.length - spaceCount
   const storedCount = shown.items.filter((i) => i.stored).length
   const totalM2 = WIDTH_M * HEIGHT_M
   const hoverStep = stroke.current?.step ?? step
+  const fields = noteFields(meta.type)
 
   const conflictIds = useMemo(
     () => new Set(shown.items.filter((it) => hasConflict(it, shown.items)).map((i) => i.id)),
@@ -396,6 +488,56 @@ export function FloorEditor() {
 
   return (
     <div className="editor">
+      <section className="workout-bar" aria-label="Workout">
+        <input
+          className="field name"
+          value={meta.name}
+          onChange={(e) => setMeta((m) => ({ ...m, name: e.target.value }))}
+          placeholder="Workout name"
+          aria-label="Workout name"
+        />
+        <select
+          className="field"
+          value={meta.type}
+          onChange={(e) => setMeta((m) => ({ ...m, type: e.target.value as WorkoutType }))}
+          aria-label="Workout type"
+        >
+          {WORKOUT_TYPES.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+        {typeInfo(meta.type).hasFocus && (
+          <select
+            className="field"
+            value={meta.focus}
+            onChange={(e) => setMeta((m) => ({ ...m, focus: e.target.value as Focus }))}
+            aria-label="Focus"
+          >
+            {FOCUSES.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        )}
+        <button className="btn primary" onClick={() => saveWorkout(false)} disabled={!meta.name.trim()}>
+          {meta.id ? 'Update workout' : 'Save workout'}
+        </button>
+        {meta.id && (
+          <button className="btn" onClick={() => saveWorkout(true)} disabled={!meta.name.trim()}>
+            Save as new
+          </button>
+        )}
+        <button className="btn" onClick={newWorkout}>
+          New
+        </button>
+        <span className="flash" role="status">
+          {flash}
+        </span>
+      </section>
+
       <header className="toolbar">
         <div className="group" role="radiogroup" aria-label="Tool">
           <button
@@ -477,10 +619,20 @@ export function FloorEditor() {
             >
               Stored<kbd>S</kbd>
             </button>
-            <button className="btn" onClick={removeSelected} disabled={!selectedId} title="Remove selected (⌫)">
+            <button
+              className="btn"
+              onClick={removeSelected}
+              disabled={!selected || isPermanent(selected.type)}
+              title={selected && isPermanent(selected.type) ? 'This equipment is permanent and always stays on the plan' : 'Remove selected (⌫)'}
+            >
               Remove<kbd>⌫</kbd>
             </button>
-            <button className="btn" onClick={removeAllEquipment} disabled={!floor.items.length}>
+            <button
+              className="btn"
+              onClick={removeAllEquipment}
+              disabled={!floor.items.some((i) => !isPermanent(i.type))}
+              title="Removes the added benches, soft mats and workout spaces. The gym's equipment stays."
+            >
               Remove all
             </button>
             {RIG_KINDS.map(({ kind, label }) => {
@@ -553,7 +705,7 @@ export function FloorEditor() {
       </header>
 
       <section className="palette" aria-label="Equipment">
-        {EQUIPMENT_TYPES.map((t) => {
+        {EQUIPMENT_TYPES.filter((t) => !t.permanent).map((t) => {
           const n = countOf(t.id)
           return (
             <button
@@ -614,7 +766,7 @@ export function FloorEditor() {
 
             {/* safe areas: space claimed by equipment that is in use */}
             {shown.items
-              .filter((i) => !i.stored)
+              .filter((i) => !i.stored && !typeOf(i.type).marker)
               .map((i) => (
                 <div key={`safe-${i.id}`} className="safe" style={rectStyle(safeRect(i))} />
               ))}
@@ -648,7 +800,7 @@ export function FloorEditor() {
               const t = typeOf(it.type)
               const base = restingOn(it, shown.items)
               const stack = t.stackMax ? stackSize(it, shown.items) : 1
-              const cls = `item${it.id === selectedId ? ' selected' : ''}${conflictIds.has(it.id) ? ' conflict' : ''}${warnIds.has(it.id) ? ' warn' : ''}${it.stored ? ' stored' : ''}${it.upright ? ' upright' : ''}`
+              const cls = `item${it.id === selectedId ? ' selected' : ''}${conflictIds.has(it.id) ? ' conflict' : ''}${warnIds.has(it.id) ? ' warn' : ''}${it.stored ? ' stored' : ''}${it.upright || footprint(it).w < 0.5 ? ' upright' : ''}${t.marker ? ' marker' : ''}`
               return (
                 <div
                   key={it.id}
@@ -695,6 +847,19 @@ export function FloorEditor() {
             />
           )}
         </div>
+        <div className="notes" style={{ '--rows': fields.length } as React.CSSProperties}>
+          {fields.map((f) => (
+            <label key={f.key} className="note">
+              <span>{f.label}</span>
+              <textarea
+                value={notes[f.key] ?? ''}
+                onChange={(e) => setNotes((n) => ({ ...n, [f.key]: e.target.value }))}
+                placeholder={fields.length === 1 ? 'Workout…' : `Workout for ${f.label.toLowerCase()}…`}
+                spellCheck={false}
+              />
+            </label>
+          ))}
+        </div>
       </div>
 
       <section className="legend" aria-label="Fixed equipment">
@@ -735,9 +900,10 @@ export function FloorEditor() {
         <span>
           Equipment{' '}
           <b>
-            {shown.items.length}/{TOTAL_EQUIPMENT}
+            {equipmentCount}/{TOTAL_EQUIPMENT}
           </b>{' '}
           placed ({storedCount} stored)
+          {spaceCount > 0 && ` · ${spaceCount} workout spaces`}
           {conflictIds.size > 0 && (
             <>
               {' · '}
