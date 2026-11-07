@@ -75,7 +75,7 @@ kbd {
   grid-column: 2; grid-row: 2; /* explicit: the notes column is also in row 2 */
   display: grid; width: 100%; position: relative; align-self: start;
   border: 2px solid var(--ink); background: var(--tile);
-  touch-action: none; user-select: none; cursor: crosshair;
+  touch-action: pan-y pinch-zoom; user-select: none; cursor: crosshair; /* the page still scrolls past the board */
 }
 .cell { background: var(--tile); }
 .cell.turf { background-color: var(--turf); }
@@ -246,3 +246,98 @@ kbd {
 .card-notes pre { margin: 0; font: inherit; font-size: .78rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .card-actions { display: flex; gap: .5rem; margin-top: auto; padding-top: .5rem; }
 .card-actions a.btn { text-decoration: none; }
+
+/* resizing a workout space: size fields and drag handles */
+.group.size { display: flex; align-items: center; gap: .35rem; }
+.group.size .dim { display: inline-flex; align-items: center; gap: .25rem; font-size: .8rem; color: var(--muted); }
+.field.num { width: 4.2rem; padding: .3rem .4rem; }
+.handles { position: absolute; pointer-events: none; z-index: 4; }
+.handle { position: absolute; width: 14px; height: 14px; background: #fff; border: 2px solid #111; border-radius: 3px; pointer-events: auto; touch-action: none; }
+.handle.e { right: -8px; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+.handle.s { bottom: -8px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
+.handle.se { right: -8px; bottom: -8px; cursor: nwse-resize; }
+
+/* guided snapping: guide lines while moving, placing or resizing equipment */
+.guide { position: absolute; pointer-events: none; z-index: 6; background: #ff3d81; }
+.guide.gap { background: #22d3ee; }
+
+/* in-page confirmations (New, Delete) */
+.confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .3rem .5rem; border: 1px solid #ff6b6b; border-radius: .6rem; background: rgb(255 107 107 / .08); font-size: .85rem; }
+.confirm-text { color: var(--muted); }
+.btn.danger { background: #c0392b; border-color: #c0392b; color: #fff; font-weight: 600; }
+.btn.danger:hover:not(:disabled) { filter: brightness(1.1); }
+
+/* the board only captures touch gestures while you are drawing or editing equipment */
+.grid.touch-edit { touch-action: none; }
+
+/* ---- cleaned-up toolbar: panels, rows and the "More" menu ---- */
+.panel { display: grid; gap: .6rem; padding: .7rem .8rem; background: var(--panel); border: 1px solid var(--line); border-radius: .75rem; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .5rem; min-width: 0; }
+.row .label { min-width: 3rem; font-size: .7rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.spacer { flex: 1 1 0; }
+.muted { color: var(--muted); font-size: .85rem; }
+.sel-name { margin-right: .25rem; font-weight: 700; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.panel .palette { flex: 0 1 auto; min-width: 0; }
+
+.menu { position: relative; }
+.menu > summary { list-style: none; cursor: pointer; user-select: none; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu > summary::after { content: ' ▾'; color: var(--muted); }
+.menu[open] > summary { border-color: var(--accent); }
+.menu-panel {
+  position: absolute; right: 0; top: calc(100% + .35rem); z-index: 20; display: grid; min-width: 15rem; padding: .35rem;
+  background: var(--panel); border: 1px solid var(--line); border-radius: .6rem; box-shadow: 0 8px 28px rgb(0 0 0 / .35);
+}
+.menu-item { text-align: left; font: inherit; font-size: .9rem; color: var(--ink); background: transparent; border: 0; border-radius: .4rem; padding: .55rem .65rem; cursor: pointer; }
+.menu-item:hover:not(:disabled) { background: rgb(128 128 128 / .18); }
+.menu-item:disabled { opacity: .4; cursor: default; }
+.confirm { align-self: start; }
+.btn, .chip, .menu > summary { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+
+/* ---- tablets and phones ---- */
+@media (pointer: coarse) {
+  kbd, .status .hint { display: none; }
+  .btn, .chip, .field, .menu-item { min-height: 2.6rem; }
+  .handle { width: 26px; height: 26px; }
+  .handle.e { right: -14px; }
+  .handle.s { bottom: -14px; }
+  .handle.se { right: -14px; bottom: -14px; }
+}
+@media (max-width: 700px) {
+  .page { width: calc(100% - 1rem); margin: .75rem auto; }
+  .topnav { width: calc(100% - 1rem); }
+  h1 { font-size: 1.15rem; }
+  .sub { display: none; }
+  .field { font-size: 16px; } /* iOS zooms into smaller inputs */
+  .field.name { flex: 1 1 100%; }
+  .workout-bar .btn.primary { flex: 1 1 auto; }
+  .menu-panel { min-width: 13rem; }
+  .row .label { min-width: 0; }
+  .panel { padding: .6rem; }
+  .panel .palette { flex-wrap: nowrap; max-width: 100%; overflow-x: auto; padding-bottom: .25rem; }
+  .chip { flex: none; }
+  .board { padding: .4rem .3rem .4rem .2rem; border-radius: .5rem; grid-template-columns: 1.1rem minmax(0, 1fr); }
+  .col-labels, .row-labels { font-size: .55rem; }
+  .zone span { font-size: 1rem; letter-spacing: .2em; }
+  .legend { font-size: .75rem; }
+  .status { font-size: .78rem; gap: .35rem 1rem; }
+}
+
+/* touch: the actions for the selected item float at the bottom of the screen, within thumb reach of the board */
+@media (pointer: coarse), (max-width: 700px) {
+  .row.selection.active {
+    position: fixed; left: .5rem; right: .5rem; bottom: .5rem; z-index: 30; flex-wrap: nowrap; overflow-x: auto;
+    padding: .5rem .6rem; background: var(--panel); border: 1px solid var(--accent); border-radius: .8rem;
+    box-shadow: 0 6px 24px rgb(0 0 0 / .45);
+  }
+  .row.selection.active > * { flex: none; }
+  .page { padding-bottom: 5.5rem; } /* room so the floating bar never covers the notes */
+}
+@media (max-width: 700px) {
+  .item { font-size: .5rem; }
+  .panel .chip small { display: none; }
+}
+@media (max-width: 700px) {
+  .row.selection.active .sel-name { max-width: 6.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .85rem; }
+}

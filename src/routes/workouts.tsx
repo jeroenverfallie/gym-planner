@@ -10,9 +10,11 @@ function Catalogue() {
   const [list, setList] = useState<Workout[] | null>(null)
   useEffect(() => setList(readWorkouts()), [])
 
+  // Deleting asks first, in the page (the browser's own confirm dialog isn't reliable everywhere).
+  const [confirmId, setConfirmId] = useState<string | null>(null)
   const remove = (w: Workout) => {
-    if (!window.confirm(`Delete "${w.name}" from the catalogue?`)) return
     removeWorkout(w.id)
+    setConfirmId(null)
     setList(readWorkouts())
   }
 
@@ -53,9 +55,21 @@ function Catalogue() {
                   <Link to="/" search={{ workout: w.id }} className="btn primary">
                     Open
                   </Link>
-                  <button className="btn" onClick={() => remove(w)}>
-                    Delete
-                  </button>
+                  {confirmId === w.id ? (
+                    <span className="confirm" role="alertdialog" aria-label={`Confirm deleting ${w.name}`}>
+                      <b>Delete this workout?</b>
+                      <button className="btn danger" onClick={() => remove(w)} autoFocus>
+                        Yes, delete
+                      </button>
+                      <button className="btn" onClick={() => setConfirmId(null)}>
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button className="btn" onClick={() => setConfirmId(w.id)}>
+                      Delete
+                    </button>
+                  )}
                 </div>
               </div>
             </article>

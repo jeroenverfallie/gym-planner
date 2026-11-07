@@ -13,13 +13,15 @@ import {
   type EquipmentTypeId,
   type Placed,
   countStations,
+  MIN_SPACE,
+  SPACE_PRESETS,
   footprint,
   isPermanent,
   sizeOf,
   typeOf,
 } from '#/lib/equipment'
 import { defaultFloor, restoreMissing } from '#/lib/default-floor'
-import { hasConflict, restingOn, safetyWarnings, snapToStack, stackSize } from '#/lib/placement'
+import { type Guide, hasConflict, restingOn, safetyWarnings, snapRect, snapSize, snapToStack, stackSize } from '#/lib/placement'
 import { useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -116,7 +118,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
   const [past, setPast] = useState<Floor[]>([])
   const [future, setFuture] = useState<Floor[]>([])
   const [draft, setDraft] = useState<Floor | null>(null)
-  const [tool, setTool] = useState<Tool>('draw')
+  const [tool, setTool] = useState<Tool>('equip') // floor drawing is rare: it lives behind "More > Edit floor"
   const [shape, setShape] = useState<Shape>('brush')
   const [value, setValue] = useState<Brush>('dead')
   const [step, setStep] = useState<Step>(SUB) // default: whole metres
@@ -124,6 +126,11 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
   const [hoverM, setHoverM] = useState<Metres | null>(null) // equipment tool, metres
   const [armed, setArmed] = useState<EquipmentTypeId | null>(null) // type about to be placed
   const [armedRotated, setArmedRotated] = useState(false)
+  // Guided snapping: guides to draw while dragging, and whether Alt (snapping off) is held.
+  const [dragGuides, setDragGuides] = useState<Guide[]>([])
+  const [altHeld, setAltHeld] = useState(false)
+  // Size of the next workout space to place (it stays as you set it, so you can lay down several the same).
+  const [armedSpace, setArmedSpace] = useState({ w: 1.5, h: 2.5 })
   const [armedUpright, setArmedUpright] = useState(false)
   const [armedStored, setArmedStored] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -133,12 +140,15 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
   // The workout being edited (id once it has been saved to the catalogue), and a short confirmation message.
   const [meta, setMeta] = useState<Meta>(EMPTY_META)
   const [flash, setFlash] = useState('')
+  // "New" asks first, in the page (the browser's own confirm dialog isn't reliable everywhere).
+  const [confirmNew, setConfirmNew] = useState(false)
 
   const gridRef = useRef<HTMLDivElement>(null)
   // Stroke/drag state live in refs: they change on every pointer move and must not trigger renders themselves.
   // Stroke points are in `step` units; `step` is frozen for the stroke.
   const stroke = useRef<{ start: Point; last: Point; base: Floor; value: Brush; step: Step } | null>(null)
-  const drag = useRef<{ id: string; base: Floor; dx: number; dy: number } | null>(null)
+  // `mode` 'move' drags the item; 'e' / 's' / 'se' drag a resize handle of a workout space.
+  const drag = useRef<{ id: string; base: Floor; dx: number; dy: number; mode: 'move' | 'e' | 's' | 'se' } | null>(null)
 
   /* ---- persistence (client only, so SSR markup stays stable) ---- */
   useEffect(() => {
@@ -235,16 +245,24 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
     setMeta((m) => ({ ...m, id: w.id, name }))
     say(isNew ? 'Saved to the catalogue' : 'Workout updated')
   }
-  const newWorkout = () => {
-    const dirty = !sameCells(floor, defaultFloor()) || Object.values(notes).some(Boolean) || !!meta.name
-    if (dirty && !window.confirm('Start a new workout? Unsaved changes to the current one will be lost.')) return
+  /** Reset everything: the layout back to the default, the text, the name and type, history and any tool state. */
+  const resetEverything = () => {
     setFloor(defaultFloor())
     setPast([])
     setFuture([])
+    setDraft(null)
+    setDragGuides([])
     setNotes({})
     setMeta(EMPTY_META)
     setSelectedId(null)
     setArmed(null)
+    setArmedRotated(false)
+    setArmedUpright(false)
+    setArmedStored(false)
+    setArmedSpace({ w: 1.5, h: 2.5 })
+    setTool('draw')
+    setConfirmNew(false)
+    say('Reset: new workout')
   }
   const clearAll = () => commit(paint(floor, rectPoints({ col: 0, row: 0 }, { col: COLS - 1, row: ROWS - 1 }), 'open')) // dead space only; surfaces stay
   const fillAll = () => commit(paint(floor, rectPoints({ col: 0, row: 0 }, { col: COLS - 1, row: ROWS - 1 }), 'dead'))
@@ -252,13 +270,42 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
   /* ---- equipment actions ---- */
   const rotateSelected = () => {
     const it = floor.items.find((i) => i.id === selectedId)
-    if (!it) return setArmedRotated((r) => !r)
+    if (!it) {
+      // A workout space turns by swapping its width and height.
+      if (armed && typeOf(armed).resizable) return setArmedSpace((s) => ({ w: s.h, h: s.w }))
+      return setArmedRotated((r) => !r)
+    }
+    if (typeOf(it.type).resizable) {
+      const fp = footprint(it)
+      const turned = { ...it, w: fp.h, h: fp.w }
+      Object.assign(turned, clampPos(it.x, it.y, fp.h, fp.w))
+      return commit({ ...floor, items: floor.items.map((i) => (i.id === it.id ? turned : i)) })
+    }
     const next = { ...it, rotated: !it.rotated }
     const { w, h } = footprint(next)
     Object.assign(next, clampPos(it.x, it.y, w, h))
     commit({ ...floor, items: floor.items.map((i) => (i.id === it.id ? next : i)) })
   }
   const selected = floor.items.find((i) => i.id === selectedId)
+  // The workout space being sized: the selected one, or the one about to be placed.
+  const sizeTarget = selected ? (typeOf(selected.type).resizable ? selected : null) : armed && typeOf(armed).resizable ? armed : null
+  const curSize = selected && sizeTarget ? footprint(selected) : armedSpace
+  const setSize = (w: number, h: number) => {
+    if (!(w >= MIN_SPACE) || !(h >= MIN_SPACE)) return // ignore empty / nonsense input
+    const nw = Math.min(WIDTH_M, Math.round(w * 10) / 10)
+    const nh = Math.min(HEIGHT_M, Math.round(h * 10) / 10)
+    if (selected && typeOf(selected.type).resizable) {
+      const moved = { ...selected, w: nw, h: nh, ...clampPos(selected.x, selected.y, nw, nh) }
+      commit({ ...floor, items: floor.items.map((i) => (i.id === selected.id ? moved : i)) })
+    } else setArmedSpace({ w: nw, h: nh })
+  }
+  /** Start dragging a resize handle of the selected workout space. */
+  const startResize = (e: React.PointerEvent, it: Placed, mode: 'e' | 's' | 'se') => {
+    e.stopPropagation()
+    if (e.button !== 0 && e.pointerType === 'mouse') return
+    gridRef.current!.setPointerCapture(e.pointerId) // the grid keeps receiving the moves, like a normal drag
+    drag.current = { id: it.id, base: floor, dx: 0, dy: 0, mode }
+  }
   /** Type whose upright setting the Upright button/key currently acts on (selected item, else the armed type). */
   const uprightType = selected ? selected.type : armed
   const canUpright = !!uprightType && !!typeOf(uprightType).upright
@@ -310,10 +357,11 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
       e.preventDefault()
       redo()
     } else if (!mod && !e.altKey) {
-      if (k === 'd') setTool('draw')
+      if (k === 'd') setTool((t) => (t === 'draw' ? 'equip' : 'draw'))
       else if (k === 'e') setTool('equip')
       else if (k === 'g') setStep((s) => (s === SUB ? 1 : SUB))
       else if (k === 'escape') {
+        setConfirmNew(false)
         setArmed(null)
         setSelectedId(null)
       } else if (tool === 'equip') {
@@ -334,6 +382,18 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
       }
     }
   }
+  useEffect(() => {
+    const track = (e: KeyboardEvent) => setAltHeld(e.altKey)
+    const off = () => setAltHeld(false)
+    window.addEventListener('keydown', track)
+    window.addEventListener('keyup', track)
+    window.addEventListener('blur', off)
+    return () => {
+      window.removeEventListener('keydown', track)
+      window.removeEventListener('keyup', track)
+      window.removeEventListener('blur', off)
+    }
+  }, [])
   useEffect(() => {
     const handler = (e: KeyboardEvent) => onKeyRef.current(e)
     window.addEventListener('keydown', handler)
@@ -358,11 +418,15 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
   }
 
   /** Where an armed item lands when the pointer is at `m` (centred on the pointer, inside the room). */
-  const placementAt = (m: Metres, type: EquipmentTypeId, rotated: boolean, upright: boolean) => {
-    const { w, h } = sizeOf(type, rotated, upright)
-    const pos = clampPos(m.x - w / 2, m.y - h / 2, w, h)
+  const placementAt = (m: Metres, type: EquipmentTypeId, rotated: boolean, upright: boolean, size?: { w: number; h: number }) => {
+    const { w, h } = size ?? sizeOf(type, rotated, upright)
+    const free = clampPos(m.x - w / 2, m.y - h / 2, w, h)
     // Stackable types (plyo boxes) snap onto an overlapped unit of the same type.
-    return snapToStack(floor.items, null, { id: 'probe', type, rotated, upright, ...pos })
+    const stacked = snapToStack(floor.items, null, { id: 'probe', type, rotated, upright, ...size, ...free })
+    if (stacked.x !== free.x || stacked.y !== free.y || altHeld) return { ...stacked, guides: [] as Guide[] }
+    // Otherwise guided snapping: align with, and space evenly from, the same kind of equipment nearby.
+    const sn = snapRect(floor.items, null, type, { ...free, w, h })
+    return { ...clampPos(sn.x, sn.y, w, h), guides: sn.guides }
   }
 
   const equipDown = (e: React.PointerEvent) => {
@@ -376,13 +440,16 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
     // Disarm (Esc or the chip) to select and drag existing items.
     if (armed && placedOfArmed < typeOf(armed).count) {
       const upright = armedUpright && !!typeOf(armed).upright
+      const place = placementAt(m, armed, armedRotated, upright, typeOf(armed).resizable ? armedSpace : undefined)
       const item: Placed = {
         id: newId(armed),
         type: armed,
         rotated: armedRotated,
         upright,
         stored: armedStored,
-        ...placementAt(m, armed, armedRotated, upright),
+        ...(typeOf(armed).resizable ? armedSpace : {}),
+        x: place.x,
+        y: place.y,
       }
       commit({ ...floor, items: [...floor.items, item] })
       setSelectedId(item.id)
@@ -390,7 +457,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
     } else if (hit) {
       setSelectedId(hit.id)
       setArmed(null)
-      drag.current = { id: hit.id, base: floor, dx: m.x - hit.x, dy: m.y - hit.y }
+      drag.current = { id: hit.id, base: floor, dx: m.x - hit.x, dy: m.y - hit.y, mode: 'move' }
     } else {
       const part = rackPartAt(m)
       if (part !== null) toggleRigPart(part)
@@ -414,11 +481,40 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
       const m = metres(e)
       setHoverM(m)
       const d = drag.current
-      if (d) {
+      if (d && d.mode !== 'move') {
+        // Resizing a workout space: the edge follows the pointer, to the nearest 0.1 m.
+        const clampTo = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+        let resizeGuides: Guide[] = []
+        const grown = (it: Placed): Placed => {
+          const fp = footprint(it)
+          let w = d.mode === 's' ? fp.w : clampTo(Math.round((m.x - it.x) * 10) / 10, MIN_SPACE, WIDTH_M - it.x)
+          let h = d.mode === 'e' ? fp.h : clampTo(Math.round((m.y - it.y) * 10) / 10, MIN_SPACE, HEIGHT_M - it.y)
+          if (!e.altKey) {
+            // snap the dragged edge to the same kind of equipment: its edges, centres, or its size
+            const sn = snapSize(d.base.items, it.id, it.type, { x: it.x, y: it.y, w, h }, { x: d.mode !== 's', y: d.mode !== 'e' })
+            w = clampTo(sn.w, MIN_SPACE, WIDTH_M - it.x)
+            h = clampTo(sn.h, MIN_SPACE, HEIGHT_M - it.y)
+            resizeGuides = sn.guides
+          }
+          return { ...it, w, h }
+        }
+        const resized = d.base.items.map((i) => (i.id === d.id ? grown(i) : i))
+        setDragGuides(resizeGuides)
+        setDraft({ ...d.base, items: resized })
+      } else if (d) {
         const it = d.base.items.find((i) => i.id === d.id)!
         const { w, h } = footprint(it)
         const free = clampPos(m.x - d.dx, m.y - d.dy, w, h)
-        const pos = snapToStack(d.base.items, d.id, { ...it, ...free })
+        const stacked = snapToStack(d.base.items, d.id, { ...it, ...free })
+        let pos: { x: number; y: number } = stacked
+        let guides: Guide[] = []
+        // Guided snapping (hold Alt to move freely); stacking onto a plyo box takes priority.
+        if (!e.altKey && stacked.x === free.x && stacked.y === free.y) {
+          const sn = snapRect(d.base.items, d.id, it.type, { ...free, w, h })
+          pos = clampPos(sn.x, sn.y, w, h)
+          guides = sn.guides
+        }
+        setDragGuides(guides)
         setDraft({ ...d.base, items: d.base.items.map((i) => (i.id === d.id ? { ...i, ...pos } : i)) })
       }
       return
@@ -443,6 +539,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
     if (!stroke.current && !drag.current) return
     stroke.current = null
     drag.current = null
+    setDragGuides([])
     if (draft) commit(draft)
     setDraft(null)
   }
@@ -456,28 +553,51 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
   const storedCount = shown.items.filter((i) => i.stored).length
   const totalM2 = WIDTH_M * HEIGHT_M
   const hoverStep = stroke.current?.step ?? step
+  const cellEls = useMemo(
+    () => shown.cells.map((c, i) => <div key={i} className={`cell ${c} ${shown.surface[i]}`} />),
+    [shown.cells, shown.surface],
+  )
   const fields = noteFields(meta.type)
 
   const conflictIds = useMemo(
-    () => new Set(shown.items.filter((it) => hasConflict(it, shown.items)).map((i) => i.id)),
+    () => new Set(shown.items.filter((it) => hasConflict(shown, it, shown.items)).map((i) => i.id)),
     [shown],
   )
   const warnIds = useMemo(() => safetyWarnings(shown.items, shown.active), [shown])
   const countOf = (id: EquipmentTypeId) => shown.items.filter((i) => i.type === id).length
 
   // Ghost preview of the armed item under the pointer.
-  const ghost: Placed | null =
+  const ghostPlace =
     tool === 'equip' && armed && hoverM && !drag.current && countOf(armed) < typeOf(armed).count
+      ? placementAt(
+          hoverM,
+          armed,
+          armedRotated,
+          armedUpright && !!typeOf(armed).upright,
+          typeOf(armed).resizable ? armedSpace : undefined,
+        )
+      : null
+  const ghost: Placed | null =
+    ghostPlace && armed
       ? {
           id: 'ghost',
           type: armed,
           rotated: armedRotated,
           upright: armedUpright && !!typeOf(armed).upright,
           stored: armedStored,
-          ...placementAt(hoverM, armed, armedRotated, armedUpright && !!typeOf(armed).upright),
+          ...(typeOf(armed).resizable ? armedSpace : {}),
+          x: ghostPlace.x,
+          y: ghostPlace.y,
         }
       : null
-  const ghostConflict = ghost ? hasConflict(ghost, shown.items) : false
+  const guides = dragGuides.length ? dragGuides : (ghostPlace?.guides ?? [])
+  const guideStyle = (g: Guide) => ({
+    left: pct(Math.min(g.x1, g.x2), WIDTH_M),
+    top: pct(Math.min(g.y1, g.y2), HEIGHT_M),
+    width: g.x1 === g.x2 ? '1px' : pct(Math.abs(g.x2 - g.x1), WIDTH_M),
+    height: g.y1 === g.y2 ? '1px' : pct(Math.abs(g.y2 - g.y1), HEIGHT_M),
+  })
+  const ghostConflict = ghost ? hasConflict(shown, ghost, shown.items) : false
 
   const rectStyle = (r: { x: number; y: number; w: number; h: number }) => ({
     left: pct(r.x, WIDTH_M),
@@ -485,6 +605,20 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
     width: pct(r.w, WIDTH_M),
     height: pct(r.h, HEIGHT_M),
   })
+
+  const menuRef = useRef<HTMLDetailsElement>(null)
+  const closeMenu = () => {
+    if (menuRef.current) menuRef.current.open = false
+  }
+  // tap outside the "More" menu closes it
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const m = menuRef.current
+      if (m?.open && !m.contains(e.target as Node)) m.open = false
+    }
+    document.addEventListener('pointerdown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
+  }, [])
 
   return (
     <div className="editor">
@@ -525,61 +659,114 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
         <button className="btn primary" onClick={() => saveWorkout(false)} disabled={!meta.name.trim()}>
           {meta.id ? 'Update workout' : 'Save workout'}
         </button>
-        {meta.id && (
-          <button className="btn" onClick={() => saveWorkout(true)} disabled={!meta.name.trim()}>
-            Save as new
-          </button>
-        )}
-        <button className="btn" onClick={newWorkout}>
-          New
-        </button>
+        <details className="menu" ref={menuRef}>
+          <summary className="btn" aria-label="More actions">
+            More
+          </summary>
+          <div className="menu-panel">
+            {meta.id && (
+              <button
+                className="menu-item"
+                onClick={() => {
+                  saveWorkout(true)
+                  closeMenu()
+                }}
+                disabled={!meta.name.trim()}
+              >
+                Save as new
+              </button>
+            )}
+            <button
+              className="menu-item"
+              onClick={() => {
+                setConfirmNew(true)
+                closeMenu()
+              }}
+            >
+              New workout…
+            </button>
+            <button
+              className="menu-item"
+              onClick={() => {
+                resetDefault()
+                closeMenu()
+              }}
+              disabled={sameCells(floor, defaultFloor())}
+            >
+              Reset to default layout
+            </button>
+            <button
+              className="menu-item"
+              onClick={() => {
+                removeAllEquipment()
+                closeMenu()
+              }}
+              disabled={!floor.items.some((i) => !isPermanent(i.type))}
+              title="Removes the added benches, soft mats and workout spaces. The gym's equipment stays."
+            >
+              Remove added equipment
+            </button>
+            <button
+              className="menu-item"
+              onClick={() => {
+                setTool('draw')
+                closeMenu()
+              }}
+            >
+              Edit floor (dead space, turf)…
+            </button>
+          </div>
+        </details>
         <span className="flash" role="status">
           {flash}
         </span>
       </section>
 
-      <header className="toolbar">
-        <div className="group" role="radiogroup" aria-label="Tool">
-          <button
-            role="radio"
-            aria-checked={tool === 'draw'}
-            className={tool === 'draw' ? 'btn active' : 'btn'}
-            onClick={() => setTool('draw')}
-            title="Draw floor (D)"
-          >
-            Draw
-            <kbd>D</kbd>
+      {confirmNew && (
+        <div className="confirm" role="alertdialog" aria-label="Confirm new workout">
+          <b>Reset everything?</b>
+          <span className="confirm-text">Layout, text and name are cleared.</span>
+          <button className="btn danger" onClick={resetEverything} autoFocus>
+            Yes, reset
           </button>
-          <button
-            role="radio"
-            aria-checked={tool === 'equip'}
-            className={tool === 'equip' ? 'btn active' : 'btn'}
-            onClick={() => setTool('equip')}
-            title="Place equipment (E)"
-          >
-            Equipment
-            <kbd>E</kbd>
+          <button className="btn" onClick={() => setConfirmNew(false)}>
+            Cancel
           </button>
         </div>
+      )}
 
-        {tool === 'draw' ? (
-          <>
+      {tool === 'draw' ? (
+        <section className="panel floor-tools" aria-label="Floor tools">
+          <div className="row">
+            <b>Edit floor</b>
+            <span className="muted">Mark dead space and the turf</span>
+            <span className="spacer" />
+            <button className="btn" onClick={undo} disabled={!past.length} title="Undo (⌘Z)">
+              Undo
+            </button>
+            <button className="btn" onClick={redo} disabled={!future.length} title="Redo (⇧⌘Z)">
+              Redo
+            </button>
+            <button className="btn primary" onClick={() => setTool('equip')}>
+              Done
+            </button>
+          </div>
+          <div className="row">
             <div className="group" role="radiogroup" aria-label="Shape">
-              {SHAPES.map((s) => (
+              {SHAPES.map((sh) => (
                 <button
-                  key={s.id}
+                  key={sh.id}
                   role="radio"
-                  aria-checked={shape === s.id}
-                  className={shape === s.id ? 'btn active' : 'btn'}
-                  onClick={() => setShape(s.id)}
-                  title={`${s.label} (${s.key})`}
+                  aria-checked={shape === sh.id}
+                  className={shape === sh.id ? 'btn active' : 'btn'}
+                  onClick={() => setShape(sh.id)}
+                  title={`${sh.label} (${sh.key})`}
                 >
-                  {s.label}
-                  <kbd>{s.key}</kbd>
+                  {sh.label}
+                  <kbd>{sh.key}</kbd>
                 </button>
               ))}
             </div>
-
             <div className="group" role="radiogroup" aria-label="Paint">
               {BRUSHES.map((b) => (
                 <button
@@ -595,46 +782,163 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                 </button>
               ))}
             </div>
-          </>
-        ) : (
-          <div className="group">
-            <button className="btn" onClick={rotateSelected} disabled={!selectedId && !armed} title="Rotate 90° (R)">
-              Rotate<kbd>R</kbd>
+            <div className="group" role="radiogroup" aria-label="Precision">
+              <button
+                role="radio"
+                aria-checked={step === SUB}
+                className={step === SUB ? 'btn active' : 'btn'}
+                onClick={() => setStep(SUB)}
+              >
+                1 m
+              </button>
+              <button
+                role="radio"
+                aria-checked={step === 1}
+                className={step === 1 ? 'btn active' : 'btn'}
+                onClick={() => setStep(1)}
+              >
+                0.5 m
+              </button>
+              <kbd title="Toggle precision">G</kbd>
+            </div>
+            <button className="btn" onClick={fillAll}>
+              Fill all
             </button>
-            <button
-              className={isUpright && canUpright ? 'btn active' : 'btn'}
-              onClick={toggleUpright}
-              disabled={!canUpright}
-              aria-pressed={isUpright && canUpright}
-              title="Stand on end (U)"
-            >
-              Upright<kbd>U</kbd>
+            <button className="btn" onClick={clearAll} disabled={countDead(floor) === 0}>
+              Clear
             </button>
-            <button
-              className={isStoredMark && (selected || armed) ? 'btn active' : 'btn'}
-              onClick={toggleStored}
-              disabled={!selected && !armed}
-              aria-pressed={isStoredMark && !!(selected || armed)}
-              title="Mark as stored: not in use, drawn dulled (S)"
-            >
-              Stored<kbd>S</kbd>
+          </div>
+        </section>
+      ) : (
+        <section className="panel" aria-label="Equipment tools">
+          <div className="row">
+            <span className="label">Add</span>
+            <div className="palette" aria-label="Equipment">
+              {EQUIPMENT_TYPES.filter((t) => !t.permanent).map((t) => {
+                const n = countOf(t.id)
+                return (
+                  <button
+                    key={t.id}
+                    className={armed === t.id ? 'chip active' : 'chip'}
+                    disabled={n >= t.count}
+                    onClick={() => armType(t.id)}
+                    title={`Place ${t.name}`}
+                  >
+                    <i className="chip-dot" style={{ background: t.color }} />
+                    <span className="chip-name">{t.name}</span>
+                    <small>
+                      {n}/{t.count} · {t.length} × {t.depth} m
+                    </small>
+                  </button>
+                )
+              })}
+            </div>
+            <span className="spacer" />
+            <button className="btn" onClick={undo} disabled={!past.length} title="Undo (⌘Z)">
+              Undo
             </button>
-            <button
-              className="btn"
-              onClick={removeSelected}
-              disabled={!selected || isPermanent(selected.type)}
-              title={selected && isPermanent(selected.type) ? 'This equipment is permanent and always stays on the plan' : 'Remove selected (⌫)'}
-            >
-              Remove<kbd>⌫</kbd>
+            <button className="btn" onClick={redo} disabled={!future.length} title="Redo (⇧⌘Z)">
+              Redo
             </button>
-            <button
-              className="btn"
-              onClick={removeAllEquipment}
-              disabled={!floor.items.some((i) => !isPermanent(i.type))}
-              title="Removes the added benches, soft mats and workout spaces. The gym's equipment stays."
-            >
-              Remove all
-            </button>
+          </div>
+
+          <div className={`row selection${selected || armed ? ' active' : ''}`}>
+            {selected || armed ? (
+              <>
+                <span className="sel-name">
+                  {selected ? typeOf(selected.type).name : `Placing ${typeOf(armed!).name}`}
+                </span>
+                <button className="btn" onClick={rotateSelected} title="Rotate 90° (R)">
+                  Rotate<kbd>R</kbd>
+                </button>
+                {canUpright && (
+                  <button
+                    className={isUpright ? 'btn active' : 'btn'}
+                    onClick={toggleUpright}
+                    aria-pressed={isUpright}
+                    title="Stand on end (U)"
+                  >
+                    Upright<kbd>U</kbd>
+                  </button>
+                )}
+                <button
+                  className={isStoredMark ? 'btn active' : 'btn'}
+                  onClick={toggleStored}
+                  aria-pressed={isStoredMark}
+                  title="Mark as stored: not in use, drawn dulled (S)"
+                >
+                  Stored<kbd>S</kbd>
+                </button>
+                {sizeTarget && (
+                  <div className="group size" aria-label="Workout space size">
+                    {SPACE_PRESETS.map((pr) => (
+                      <button key={pr.label} className="btn" onClick={() => setSize(pr.w, pr.h)} title={`${pr.w} × ${pr.h} m`}>
+                        {pr.label}
+                      </button>
+                    ))}
+                    <label className="dim">
+                      W
+                      <input
+                        key={`w-${selected?.id ?? 'new'}-${curSize.w}`}
+                        className="field num"
+                        type="number"
+                        inputMode="decimal"
+                        min={MIN_SPACE}
+                        max={WIDTH_M}
+                        step={0.1}
+                        defaultValue={curSize.w}
+                        onBlur={(e) => setSize(e.target.valueAsNumber, curSize.h)}
+                        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                        aria-label="Width in metres"
+                      />
+                    </label>
+                    ×
+                    <label className="dim">
+                      H
+                      <input
+                        key={`h-${selected?.id ?? 'new'}-${curSize.h}`}
+                        className="field num"
+                        type="number"
+                        inputMode="decimal"
+                        min={MIN_SPACE}
+                        max={HEIGHT_M}
+                        step={0.1}
+                        defaultValue={curSize.h}
+                        onBlur={(e) => setSize(curSize.w, e.target.valueAsNumber)}
+                        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                        aria-label="Height in metres"
+                      />
+                    </label>
+                    m
+                  </div>
+                )}
+                {selected && (
+                  <button
+                    className="btn"
+                    onClick={removeSelected}
+                    disabled={isPermanent(selected.type)}
+                    title={isPermanent(selected.type) ? 'This equipment is permanent and always stays on the plan' : 'Remove selected (⌫)'}
+                  >
+                    Remove<kbd>⌫</kbd>
+                  </button>
+                )}
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    setSelectedId(null)
+                    setArmed(null)
+                  }}
+                >
+                  Done
+                </button>
+              </>
+            ) : (
+              <span className="muted">Tap a piece of equipment to select it, drag to move it.</span>
+            )}
+          </div>
+
+          <div className="row">
+            <span className="label">In use</span>
             {RIG_KINDS.map(({ kind, label }) => {
               const idx = rackPartsOfKind(kind)
               const on = idx.filter((i) => floor.active.rig.includes(i)).length
@@ -656,74 +960,11 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
               aria-pressed={floor.active.wallBalls}
               title="Wall balls in use: claims the throwing space in front of the targets"
             >
-              Wall balls in use
+              Wall balls
             </button>
           </div>
-        )}
-
-        <div className="group" role="radiogroup" aria-label="Precision">
-          <button
-            role="radio"
-            aria-checked={step === SUB}
-            className={step === SUB ? 'btn active' : 'btn'}
-            onClick={() => setStep(SUB)}
-          >
-            1 m
-          </button>
-          <button
-            role="radio"
-            aria-checked={step === 1}
-            className={step === 1 ? 'btn active' : 'btn'}
-            onClick={() => setStep(1)}
-          >
-            0.5 m
-          </button>
-          <kbd title="Toggle precision">G</kbd>
-        </div>
-
-        <div className="group">
-          <button className="btn" onClick={undo} disabled={!past.length} title="Undo (⌘Z)">
-            Undo
-          </button>
-          <button className="btn" onClick={redo} disabled={!future.length} title="Redo (⇧⌘Z)">
-            Redo
-          </button>
-          {tool === 'draw' && (
-            <>
-              <button className="btn" onClick={fillAll}>
-                Fill all
-              </button>
-              <button className="btn" onClick={clearAll} disabled={countDead(floor) === 0}>
-                Clear
-              </button>
-            </>
-          )}
-          <button className="btn" onClick={resetDefault} disabled={sameCells(floor, defaultFloor())}>
-            Reset to default
-          </button>
-        </div>
-      </header>
-
-      <section className="palette" aria-label="Equipment">
-        {EQUIPMENT_TYPES.filter((t) => !t.permanent).map((t) => {
-          const n = countOf(t.id)
-          return (
-            <button
-              key={t.id}
-              className={armed === t.id ? 'chip active' : 'chip'}
-              disabled={n >= t.count}
-              onClick={() => armType(t.id)}
-              title={`Place ${t.name}`}
-            >
-              <i className="chip-dot" style={{ background: t.color }} />
-              <span className="chip-name">{t.name}</span>
-              <small>
-                {n}/{t.count} · {t.length} × {t.depth} m
-              </small>
-            </button>
-          )
-        })}
-      </section>
+        </section>
+      )}
 
       <div className="board">
         <div className="col-labels" aria-hidden>
@@ -738,7 +979,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
         </div>
         <div
           ref={gridRef}
-          className={`grid${step === 1 ? ' fine' : ''}${tool === 'equip' ? ' equip' : ''}`}
+          className={`grid${step === 1 ? ' fine' : ''}${tool === 'equip' ? ' equip' : ''}${tool === 'draw' || armed || selectedId ? ' touch-edit' : ''}`}
           style={{ gridTemplateColumns: `repeat(${COLS}, 1fr)`, aspectRatio: `${WIDTH_M} / ${HEIGHT_M}` }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -747,11 +988,10 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
           onPointerLeave={() => {
             setHover(null)
             setHoverM(null)
+            if (!drag.current) setDragGuides([])
           }}
         >
-          {shown.cells.map((c, i) => (
-            <div key={i} className={`cell ${c} ${shown.surface[i]}`} />
-          ))}
+          {cellEls}
           <div className="meter-lines" />
           <div className="fixed-layer" aria-hidden>
             {ZONES.map((z) => (
@@ -810,12 +1050,24 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                 >
                   <span>
                     {t.short}
+                    {t.resizable && ` ${+footprint(it).w.toFixed(2)}×${+footprint(it).h.toFixed(2)}`}
                     {stack > 1 && ` ${stack}x`}
                     {base && ' ↑'}
                   </span>
                 </div>
               )
             })}
+
+            {(() => {
+              const sel = shown.items.find((i) => i.id === selectedId && typeOf(i.type).resizable)
+              return sel ? (
+                <div className="handles" style={rectStyle(footprint(sel))}>
+                  <i className="handle e" onPointerDown={(e) => startResize(e, sel, 'e')} title="Drag to change the width" />
+                  <i className="handle s" onPointerDown={(e) => startResize(e, sel, 's')} title="Drag to change the height" />
+                  <i className="handle se" onPointerDown={(e) => startResize(e, sel, 'se')} title="Drag to resize" />
+                </div>
+              ) : null
+            })()}
 
             {WALL_BALL_TARGETS.map((t) => (
               <div
@@ -824,6 +1076,10 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                 title={`${t.name} · overhead, space below stays usable`}
                 style={rectStyle({ x: t.x, y: t.y, w: t.width, h: t.height })}
               />
+            ))}
+
+            {guides.map((g, i) => (
+              <div key={`guide-${i}`} className={`guide ${g.kind}`} style={guideStyle(g)} />
             ))}
 
             {ghost && (
@@ -927,7 +1183,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
         <span className="hint">
           {tool === 'draw'
             ? 'Hold ⌥ to invert while drawing'
-            : 'Pick a type, click to place · drag to move · R rotates · U upright · S stored · ⌫ removes · Esc deselects'}
+            : 'Pick a type, click to place · drag to move · R rotates · U upright · S stored · ⌫ removes · Esc deselects · hold ⌥ to skip snapping'}
         </span>
       </footer>
     </div>

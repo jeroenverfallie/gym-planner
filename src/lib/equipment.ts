@@ -73,7 +73,7 @@ export function countStations(e: FixedEquipment): Record<StationKind, number> {
  * Footprints are the machine only — user space and lane clearance come later.
  * ------------------------------------------------------------------------- */
 
-export type EquipmentTypeId = 'echo-bike' | 'rowerg' | 'skierg' | 'bikeerg' | 'runner' | 'sled' | 'plyo' | 'bench' | 'softmat' | 'space' | 'space-m' | 'space-s'
+export type EquipmentTypeId = 'echo-bike' | 'rowerg' | 'skierg' | 'bikeerg' | 'runner' | 'sled' | 'plyo' | 'bench' | 'softmat' | 'space'
 
 /**
  * Safe area around a unit in use: `ends` beyond the short sides, `sides` beyond the long sides (before rotation).
@@ -102,6 +102,8 @@ export type EquipmentType = {
    * somewhere. Only benches, soft mats and workout spaces are added and removed per workout.
    */
   permanent?: boolean
+  /** Can be drawn to any size (workout spaces and lanes): items carry their own `w` × `h`. */
+  resizable?: boolean
   /** A planning marker, not a machine: drawn as an outline and left out of the equipment totals. */
   marker?: boolean
   /** Units of this type can stack on each other (same spot) up to this many high. */
@@ -139,45 +141,21 @@ export const EQUIPMENT_TYPES: EquipmentType[] = [
   // 1.2 × 0.4 m. Safe area: dumbbell work either side.
   { id: 'bench', safe: { ends: 0.4, sides: 0.6 }, name: 'Bench', short: 'Bench', color: '#b8a1ff', length: 1.2, depth: 0.4, count: 8 },
   // Size is an estimate (a standard exercise mat); floor work around it.
-  { id: 'softmat', safe: { ends: 0.3, sides: 0.3 }, name: 'Soft mat', short: 'Soft', color: '#6ee7b7', length: 1.8, depth: 0.6, count: 8 },
-  // Workout spaces: floor that must stay clear for a movement. The space itself is the safe area, so it adds no
-  // margin: nothing else may stand in it. Width (x) × depth (y); rotate for the other way round.
-  // L (the original): movements that travel: broad jumps, lunges, walking lunges, bear crawls.
+  { id: 'softmat', safe: { ends: 0.3, sides: 0.3 }, name: 'Soft mat', short: 'Mat', color: '#6ee7b7', length: 1.8, depth: 0.6, count: 8 },
+  // Workout space: floor that must stay clear for a movement, drawn to any size: a 1 × 1 m spot for squats, a
+  // 1.2 × 2 m patch for burpees and floor work, a 12 × 1.5 m lane for carries and jumps. The space itself is
+  // the safe area, so it adds no margin: nothing else may stand in it. New ones start at 1.5 × 2.5 m.
   {
     id: 'space',
     safe: { ends: 0, sides: 0 },
-    name: 'Workout space L',
-    short: 'Space L',
+    name: 'Workout space',
+    short: 'Space',
     color: '#ffffff',
     length: 1.5,
     depth: 2.5,
     count: 24,
     marker: true,
-  },
-  // M: floor work and burpees: burpees (a person stretched out plus the hop back), push-ups, planks, sit-ups,
-  // mountain climbers, leg curls. About a person's length (1.8 m) plus a little, and arm span wide.
-  {
-    id: 'space-m',
-    safe: { ends: 0, sides: 0 },
-    name: 'Workout space M',
-    short: 'Space M',
-    color: '#ffffff',
-    length: 1.2,
-    depth: 2.0,
-    count: 24,
-    marker: true,
-  },
-  // S: stationary standing work: squats, kettlebell swings, goblet squats, thrusters, presses, curls, step-ups.
-  {
-    id: 'space-s',
-    safe: { ends: 0, sides: 0 },
-    name: 'Workout space S',
-    short: 'Space S',
-    color: '#ffffff',
-    length: 1.0,
-    depth: 1.0,
-    count: 24,
-    marker: true,
+    resizable: true,
   },
 ]
 
@@ -196,6 +174,9 @@ export type Placed = {
   upright?: boolean
   /** Marked as not in use right now (put away); drawn see-through. */
   stored?: boolean
+  /** Size on the floor, metres (x then y), for resizable types. Missing = the type's default. */
+  w?: number
+  h?: number
 }
 
 export type Rect = { x: number; y: number; w: number; h: number }
@@ -207,7 +188,16 @@ export function sizeOf(type: EquipmentTypeId, rotated: boolean, upright = false)
   return rotated ? { w: d.depth, h: d.length } : { w: d.length, h: d.depth }
 }
 
+/** Presets for the resizable workout space: small stationary, medium floor work, large travelling movements. */
+export const SPACE_PRESETS = [
+  { label: 'S', w: 1, h: 1 },
+  { label: 'M', w: 1.2, h: 2 },
+  { label: 'L', w: 1.5, h: 2.5 },
+] as const
+export const MIN_SPACE = 0.5
+
 export function footprint(p: Placed): Rect {
+  if (typeOf(p.type).resizable && p.w && p.h) return { x: p.x, y: p.y, w: p.w, h: p.h }
   return { x: p.x, y: p.y, ...sizeOf(p.type, p.rotated, p.upright) }
 }
 

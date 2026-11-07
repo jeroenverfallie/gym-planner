@@ -17,7 +17,8 @@ If a count here and the code disagree, fix the one that's wrong and tell the use
   - **Mat**: the non-rack side, rows I–L (standard tiles). Not to be confused with the soft exercise mats below.
 - **Turf** surface: 4 × 16 m. Surface for sled push/pull. Wide enough for 3 HYROX sleds with padding.
   Everything else is standard gym tiles.
-- **Fixed dead space** (unusable): I1–L2 and L8–L16.
+- **Fixed dead space** (unusable): I1–L2 and L8–L16. **Nothing may stand on it: no equipment, no stored equipment, no
+  workout spaces.** The floor editor flags anything on dead space as a conflict.
 - **Rack** (BLK BOX, fixed, 12 × 0.9 m, A3–A14), left to right:
   `P B P U P B P U P B P U P B P` where **P** = pillar with a pull station (8), **B** = barbell/squat bay (4,
   1.2 m each), **U** = pull-up bay (3). Pillars are shared between neighbouring bays.
@@ -60,20 +61,24 @@ put back automatically.
 | Bench | 8 | 8 | 1.2 × 0.4 m. |
 | Soft mat | 8 | 8 | Floor work. Size estimated at 1.8 × 0.6 m. |
 
-### Workout spaces (markers, not equipment)
+### Workout space (a resizable marker, not equipment)
 
 A **workout space** marks floor that must stay clear for a movement. It is placed in the floor editor like
 equipment, but it is only a marker: it doesn't count toward equipment totals, and nothing else may stand in it
-(overlapping equipment is a conflict). Plan one per person who needs it. Three sizes (width × depth; rotatable):
+(overlapping equipment is a conflict). Plan one per person (or per lane) that needs it.
 
-| Size | Dimensions | For |
-|---|---|---|
-| **L** | 1.5 × 2.5 m | Movements that **travel**: broad jumps, lunges, walking lunges, bear crawls. |
-| **M** | 1.2 × 2.0 m | **Floor work and burpees**: burpees, push-ups, planks, sit-ups, mountain climbers, leg curls. |
-| **S** | 1.0 × 1.0 m | **Stationary standing work**: squats, kettlebell swings, goblet squats, thrusters, presses, curls, step-ups. |
+It is **resizable**: drag its right, bottom or corner handle, type an exact width and height (metres), or pick a
+preset; **R** swaps width and height. New ones start at 1.5 × 2.5 m. Typical sizes (width × depth):
 
-Pick the smallest space the movement allows, so the zone can hold more people or spread out more. All sizes are
-estimates for an average person.
+| Use | Size |
+|---|---|
+| **S**: stationary standing work: squats, kettlebell swings, goblet squats, thrusters, presses, curls, step-ups | 1.0 × 1.0 m |
+| **M**: floor work and burpees: burpees, push-ups, planks, sit-ups, mountain climbers, leg curls | 1.2 × 2.0 m |
+| **L**: movements that travel a short way: broad jumps, lunges, bear crawls | 1.5 × 2.5 m |
+| **Lane**: carries, long jumps, walking lunges: as long as the distance (or half of it for out-and-back), about 0.75 m wide per person | e.g. 6 × 0.75 m |
+
+Use **lanes** for any distance movement instead of rows of small spaces, and the smallest size the movement allows,
+so the zone can hold more people or spread out more. All sizes are estimates for an average person.
 
 ### Free weights (no fixed count: sized by people)
 
@@ -177,7 +182,37 @@ has two, **Strength** and **Cardio**.
     of their zone** with equal gaps, as far apart as the zone allows, instead of bunching them. Gaps must never be
     smaller than the safe areas need. Use the zone's depth too (centre rows in it). Keep clear of stored equipment
     and the dead space.
-12. **`INTO` means two stations, half and half.** In a zone with `INTO`, half the people (e.g. 4 of 8) do
+12. **Always add timings per section, and keep the whole workout to about 50 minutes.** Every section of a workout (each
+    zone, station or half) states its own time, and the times add up: the **section time**, the **work and
+    move/rest** times inside it, and for `INTO` the split. **Don't write a total in the workout text; the time per
+    section is enough.** But size the sections so the whole workout is **around 50:00, with all rest and moves
+    included. There is no warm-up and no cool-down**: the 50 minutes are all workout, so don't add either. A section
+    without a time isn't finished. Put the times in the workout text itself (first line of a field), not only in
+    your reply. Usual shapes (use them unless told otherwise):
+    - **Always state the rest explicitly.** Each interval is written **work + rest**, e.g. `5 x 1:30 · 0:50 WORK / 0:40
+      REST`, and the move between zones/stations is written **MOVE + REST** (`1:30 MOVE + REST`). Rest guide: strength
+      sets (6–12 reps) about **0:40–0:45 rest after about 0:50 work**; cardio intervals about **0:20–0:30 rest**;
+      partners alternating get an equal rest (`1:30 WORK / 1:30 REST EACH`).
+    - **Time and volume must agree.** Never give a station a long time block with a task that takes a fraction of it
+      (a 7:30 block for one 250 m row makes no sense). Write each station as **intervals (N × M:SS)** where the work
+      takes about 60–80% of the interval and the rest is recovery, e.g. **5 × 1:30** for 250 m on the row or SkiErg
+      (about 1:05–1:20), 15 cal on a bike (about 1:00), 8–12 pull-ups, presses or squats. Rough speeds for an average
+      person: row or SkiErg 500 m about 2:00–2:15; 250 m about 1:05–1:20; wall balls about 25 per 1:10; burpee broad
+      jumps about 12 m per minute; 12 m sled push plus pull about 1:15.
+    - 3-zone lifts (Lift, Lift & Rush): **3 zones × 16:30 (= 49:30)**. Each field starts `16:30 · …`. A zone with
+      `INTO` is **7:30 + 7:30 + 1:30 move**; a zone without `INTO` (partners alternating) is **5 × 3:00 + 1:30 move**.
+    - Hyrox: **6 stations × (7:00 work + 1:00 move) (= 48:00)**, 6 rounds, rotate clockwise. State the per-station
+      time and the rounds, not the total. Size the volume at each station to fill the 7:00 for the pair that sets
+      the pace.
+    - 50-50: **two halves of 25:00** (= 50:00) that swap at 25:00, with the rest and moves inside each half. Each field
+      states its half's time.
+13. **Lift & Rush: keep sections and partners together, in duos.** The two stations of an `INTO` (strength and
+    cardio) are laid out **next to each other**, so the two partners of a duo work side by side and swap places. Don't
+    park all the cardio machines in one place and all the strength stations in another. Per zone, repeat the duo
+    `strength | cardio` across the zone, spread evenly (e.g. `Bench | Rower  Bench | Rower …` on the turf,
+    `Press space | Bike  Press space | Bike …` on the Mat side, pull-up bay with the SkiErgs right below it on the
+    rig). This applies to every `INTO` workout, and most of all to Lift & Rush.
+14. **`INTO` means two stations, half and half.** In a zone with `INTO`, half the people (e.g. 4 of 8) do
     the first station while the other half do the second, then they switch. Count equipment per station, not per
     zone: the zone needs only half its people's worth at each. See [example-workouts.md](example-workouts.md).
 

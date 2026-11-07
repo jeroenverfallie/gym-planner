@@ -124,7 +124,9 @@ export function sameCells(a: Floor, b: Floor) {
       const o = b.items[i]
       return (
         it.id === o.id && it.type === o.type && it.x === o.x && it.y === o.y && it.rotated === o.rotated && !!it.upright === !!o.upright &&
-        !!it.stored === !!o.stored
+        !!it.stored === !!o.stored &&
+        it.w === o.w &&
+        it.h === o.h
       )
     })
   )
@@ -170,9 +172,13 @@ export function deserialize(raw: string | null, fallbackSurface?: Surface[]): Fl
     // '2' was the short-lived storage zone type; it reads back as plain dead space.
     const dead = (c: string): Cell => (c === '1' || c === '2' ? 'dead' : 'open')
     const turf = (c: string): Surface => (c === '1' ? 'turf' : 'tile')
+    // The fixed M and S workout spaces became sizes of the one resizable space.
+    const LEGACY_SPACES: Record<string, { w: number; h: number }> = { 'space-m': { w: 1.2, h: 2 }, 'space-s': { w: 1, h: 1 } }
     const placed = (): Placed[] =>
       Array.isArray(items)
-        ? items.filter(
+        ? items
+            .map((i: Placed): Placed => (LEGACY_SPACES[i?.type as string] ? { ...i, type: 'space' as const, ...LEGACY_SPACES[i.type as string] } : i))
+            .filter(
             (i: Placed) =>
               typeof i?.id === 'string' &&
               isTypeId(i.type) &&
@@ -180,7 +186,9 @@ export function deserialize(raw: string | null, fallbackSurface?: Surface[]): Fl
               typeof i.y === 'number' &&
               typeof i.rotated === 'boolean' &&
               (i.upright === undefined || typeof i.upright === 'boolean') &&
-              (i.stored === undefined || typeof i.stored === 'boolean'),
+              (i.stored === undefined || typeof i.stored === 'boolean') &&
+              (i.w === undefined || typeof i.w === 'number') &&
+              (i.h === undefined || typeof i.h === 'number'),
           )
         : []
     const surf = (): Surface[] =>
