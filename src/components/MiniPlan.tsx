@@ -4,6 +4,8 @@ import {
   type Placed,
   footprint,
   rackSafeRects,
+  type Facing,
+  facingOf,
   safeRect,
   typeOf,
   wallBallSafeRects,
@@ -35,6 +37,19 @@ function runs(match: (i: number) => boolean) {
 }
 
 /** Draw order: things that stand on others last, so they stay visible. */
+/** A small arrow near the front edge of a directional machine, pointing the way its user faces. */
+function arrowPoints(r: { x: number; y: number; w: number; h: number }, f: Facing) {
+  const cx = r.x + r.w / 2
+  const cy = r.y + r.h / 2
+  const L = 0.32 // length
+  const B = 0.2 // half base
+  const m = 0.06 // margin from the edge
+  if (f === 'e') return `${r.x + r.w - m},${cy} ${r.x + r.w - m - L},${cy - B} ${r.x + r.w - m - L},${cy + B}`
+  if (f === 'w') return `${r.x + m},${cy} ${r.x + m + L},${cy - B} ${r.x + m + L},${cy + B}`
+  if (f === 's') return `${cx},${r.y + r.h - m} ${cx - B},${r.y + r.h - m - L} ${cx + B},${r.y + r.h - m - L}`
+  return `${cx},${r.y + m} ${cx - B},${r.y + m + L} ${cx + B},${r.y + m + L}`
+}
+
 const byLayer = (items: Placed[]) =>
   [...items].sort((a, b) => Number(!!typeOf(a.type).restsOn) - Number(!!typeOf(b.type).restsOn))
 
@@ -49,8 +64,8 @@ export function MiniPlan({ floor, title }: { floor: Floor; title?: string }) {
 
   const safe = [
     ...floor.items.filter((i) => !i.stored && !typeOf(i.type).marker).map(safeRect),
-    ...rackSafeRects(BLK_BOX_RACK, floor.active.rig),
-    ...(floor.active.wallBalls ? wallBallSafeRects() : []),
+    ...rackSafeRects(BLK_BOX_RACK, floor.active.rig, floor.active.reach),
+    ...wallBallSafeRects(floor.active.wallBalls),
   ]
 
   let rackX = BLK_BOX_RACK.x
@@ -95,7 +110,7 @@ export function MiniPlan({ floor, title }: { floor: Floor; title?: string }) {
         )
       })}
 
-      {WALL_BALL_TARGETS.map((t) => (
+      {WALL_BALL_TARGETS.map((t, i) => (
         <rect
           key={t.id}
           x={t.x}
@@ -103,7 +118,7 @@ export function MiniPlan({ floor, title }: { floor: Floor; title?: string }) {
           width={t.width}
           height={t.height}
           fill="#fff"
-          fillOpacity={floor.active.wallBalls ? 0.7 : 0.3}
+          fillOpacity={floor.active.wallBalls.includes(i) ? 0.7 : 0.3}
           stroke="#fff"
           strokeWidth={0.05}
           strokeDasharray="0.15 0.1"
@@ -129,8 +144,8 @@ export function MiniPlan({ floor, title }: { floor: Floor; title?: string }) {
             />
           )
         return (
+          <g key={it.id}>
           <rect
-            key={it.id}
             x={r.x}
             y={r.y}
             width={r.w}
@@ -140,6 +155,8 @@ export function MiniPlan({ floor, title }: { floor: Floor; title?: string }) {
             stroke="rgb(0 0 0 / .6)"
             strokeWidth={0.04}
           />
+          {t.directional && !it.stored && <polygon points={arrowPoints(r, facingOf(it))} fill="#111" fillOpacity={0.7} />}
+          </g>
         )
       })}
 

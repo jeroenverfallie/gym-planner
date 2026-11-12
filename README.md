@@ -1,4 +1,4 @@
-# joeys
+# gym-planner
 
 A minimal TanStack Start app with one route and plain CSS.
 
@@ -15,4 +15,3 @@ Build the production app with:
 ```bash
 pnpm build
 ```
-

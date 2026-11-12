@@ -3,27 +3,46 @@ import {
   FIXED_EQUIPMENT,
   STATION_KINDS,
   WALL_BALL_TARGETS,
+  BLK_BOX_RACK,
+  PULLUP_REACHES,
   rackExclusions,
   rackPartAt,
   rackPartsOfKind,
   rackSafeRects,
   type StationKind,
+  facingOf,
   safeRect,
+  quarterTurn,
+  turnsInQuarters,
   wallBallSafeRects,
   type EquipmentTypeId,
   type Placed,
-  countStations,
   MIN_SPACE,
   SPACE_PRESETS,
   footprint,
   isPermanent,
   sizeOf,
   typeOf,
-} from '#/lib/equipment'
-import { defaultFloor, restoreMissing } from '#/lib/default-floor'
-import { type Guide, hasConflict, restingOn, safetyWarnings, snapRect, snapSize, snapToStack, stackSize } from '#/lib/placement'
-import { useNavigate } from '@tanstack/react-router'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+} from "#/lib/equipment";
+import { defaultFloor, restoreMissing, storedHome } from "#/lib/default-floor";
+import {
+  type Inventory,
+  defaultInventory,
+  ownedOf,
+  readInventory,
+} from "#/lib/inventory";
+import {
+  type Guide,
+  hasConflict,
+  restingOn,
+  safetyWarnings,
+  snapRect,
+  snapSize,
+  snapToStack,
+  stackSize,
+} from "#/lib/placement";
+import { useNavigate } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FOCUSES,
   WORKOUT_TYPES,
@@ -36,19 +55,17 @@ import {
   readWorkouts,
   typeInfo,
   upsertWorkout,
-} from '#/lib/workouts'
+} from "#/lib/workouts";
 import {
   type Brush,
   type Floor,
   type Point,
-  CELL_AREA,
   COLS,
   HEIGHT_M,
   ROWS,
   SUB,
   WIDTH_M,
   countDead,
-  countTurf,
   deserialize,
   expand,
   linePoints,
@@ -58,567 +75,908 @@ import {
   sameCells,
   serialize,
   ZONES,
-} from '#/lib/floor'
+} from "#/lib/floor";
 
-type Shape = 'brush' | 'line' | 'rect'
-type Tool = 'draw' | 'equip'
+type Shape = "brush" | "line" | "rect";
+type Tool = "draw" | "equip";
 /** Marking resolution in stored cells: 2 = 1 m, 1 = 0.5 m. */
-type Step = 1 | 2
-type Metres = { x: number; y: number }
+type Step = 1 | 2;
+type Metres = { x: number; y: number };
 
 // v2: current save format (v1 saves are ignored).
-const NOTES_KEY = 'joeys:workout-notes:v1'
-const META_KEY = 'joeys:current-workout:v1'
+const NOTES_KEY = "gym-planner:workout-notes:v1";
+const META_KEY = "gym-planner:current-workout:v1";
 
-type Meta = { id: string | null; name: string; type: WorkoutType; focus: Focus }
-const EMPTY_META: Meta = { id: null, name: '', type: 'lift', focus: 'lower' }
-const STORAGE_KEY = 'joeys:floor:v2'
+type Meta = {
+  id: string | null;
+  name: string;
+  type: WorkoutType;
+  focus: Focus;
+};
+const EMPTY_META: Meta = { id: null, name: "", type: "lift", focus: "lower" };
+const STORAGE_KEY = "gym-planner:floor:v2";
 
 const SHAPES: { id: Shape; label: string; key: string }[] = [
-  { id: 'brush', label: 'Brush', key: 'B' },
-  { id: 'line', label: 'Line', key: 'L' },
-  { id: 'rect', label: 'Rectangle', key: 'R' },
-]
+  { id: "brush", label: "Brush", key: "B" },
+  { id: "line", label: "Line", key: "L" },
+  { id: "rect", label: "Rectangle", key: "R" },
+];
 
 const BRUSHES: { id: Brush; label: string; key: string }[] = [
-  { id: 'dead', label: 'Dead', key: 'X' },
-  { id: 'open', label: 'Erase', key: 'X' },
-  { id: 'turf', label: 'Turf', key: 'U' },
-  { id: 'tile', label: 'Tile', key: 'T' },
-]
+  { id: "dead", label: "Dead", key: "X" },
+  { id: "open", label: "Erase", key: "X" },
+  { id: "turf", label: "Turf", key: "U" },
+  { id: "tile", label: "Tile", key: "T" },
+];
 
 const RIG_KINDS: { kind: StationKind; label: string }[] = [
-  { kind: 'barbell', label: 'Barbells' },
-  { kind: 'pull', label: 'Pulls' },
-  { kind: 'pullup', label: 'Pull-ups' },
-]
+  { kind: "barbell", label: "Barbells" },
+  { kind: "pull", label: "Pulls" },
+  { kind: "pullup", label: "Pull-ups" },
+];
 
 /** Workout spaces are markers, not equipment: they don't count toward the equipment totals. */
-const TOTAL_EQUIPMENT = EQUIPMENT_TYPES.filter((t) => !t.marker).reduce((n, t) => n + t.count, 0)
 
-const rowLabel = (r: number) => String.fromCharCode(65 + r)
-const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1))
-const pct = (v: number, of: number) => `${(v / of) * 100}%`
-const newId = (type: string) => `${type}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+const rowLabel = (r: number) => String.fromCharCode(65 + r);
+const pct = (v: number, of: number) => `${(v / of) * 100}%`;
+const newId = (type: string) =>
+  `${type}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /** Items that stand on others (RowErgs) go last: drawn on top and picked first. */
 const byLayer = (items: Placed[]) =>
-  [...items].sort((a, b) => Number(!!typeOf(a.type).restsOn) - Number(!!typeOf(b.type).restsOn))
+  [...items].sort(
+    (a, b) =>
+      Number(!!typeOf(a.type).restsOn) - Number(!!typeOf(b.type).restsOn),
+  );
 
-const toCm = (v: number) => Math.round(v * 100) / 100
+const toCm = (v: number) => Math.round(v * 100) / 100;
 /** Keep a w × h rect inside the room. Equipment isn't snapped: it lands exactly where it's dropped (to the cm). */
+/** Stored equipment lives along the left and right walls: within a metre of either. */
+const nearSideWall = (r: { x: number; w: number }) =>
+  r.x < 1 || r.x + r.w > WIDTH_M - 1;
+
 const clampPos = (x: number, y: number, w: number, h: number) => ({
   x: toCm(Math.min(WIDTH_M - w, Math.max(0, x))),
   y: toCm(Math.min(HEIGHT_M - h, Math.max(0, y))),
-})
+});
 
 export function FloorEditor({ loadId }: { loadId?: string }) {
-  const navigate = useNavigate()
-  const [floor, setFloor] = useState<Floor>(() => defaultFloor())
-  const [past, setPast] = useState<Floor[]>([])
-  const [future, setFuture] = useState<Floor[]>([])
-  const [draft, setDraft] = useState<Floor | null>(null)
-  const [tool, setTool] = useState<Tool>('equip') // floor drawing is rare: it lives behind "More > Edit floor"
-  const [shape, setShape] = useState<Shape>('brush')
-  const [value, setValue] = useState<Brush>('dead')
-  const [step, setStep] = useState<Step>(SUB) // default: whole metres
-  const [hover, setHover] = useState<Point | null>(null) // draw tool, in `step` units
-  const [hoverM, setHoverM] = useState<Metres | null>(null) // equipment tool, metres
-  const [armed, setArmed] = useState<EquipmentTypeId | null>(null) // type about to be placed
-  const [armedRotated, setArmedRotated] = useState(false)
+  const navigate = useNavigate();
+  const [floor, setFloor] = useState<Floor>(() => defaultFloor());
+  // What the gym owns (Settings): read after mount, so server and first client render agree.
+  const [inv, setInv] = useState<Inventory>(defaultInventory);
+  const owned = (id: EquipmentTypeId) => ownedOf(inv, id);
+  const fresh = (): Floor => {
+    const f = defaultFloor();
+    return { ...f, items: restoreMissing(f.items, inv) };
+  };
+  const [past, setPast] = useState<Floor[]>([]);
+  const [future, setFuture] = useState<Floor[]>([]);
+  const [draft, setDraft] = useState<Floor | null>(null);
+  const [tool, setTool] = useState<Tool>("equip"); // floor drawing is rare: it lives behind "More > Edit floor"
+  const [shape, setShape] = useState<Shape>("brush");
+  const [value, setValue] = useState<Brush>("dead");
+  const [step, setStep] = useState<Step>(SUB); // default: whole metres
+  const [hover, setHover] = useState<Point | null>(null); // draw tool, in `step` units
+  const [hoverM, setHoverM] = useState<Metres | null>(null); // equipment tool, metres
+  const [armed, setArmed] = useState<EquipmentTypeId | null>(null); // type about to be placed
+  const [armedRotated, setArmedRotated] = useState(false);
+  const [armedFlip, setArmedFlip] = useState(false); // directional machines: the other way along the axis
   // Guided snapping: guides to draw while dragging, and whether Alt (snapping off) is held.
-  const [dragGuides, setDragGuides] = useState<Guide[]>([])
-  const [altHeld, setAltHeld] = useState(false)
+  const [dragGuides, setDragGuides] = useState<Guide[]>([]);
+  const [altHeld, setAltHeld] = useState(false);
   // Size of the next workout space to place (it stays as you set it, so you can lay down several the same).
-  const [armedSpace, setArmedSpace] = useState({ w: 1.5, h: 2.5 })
-  const [armedUpright, setArmedUpright] = useState(false)
-  const [armedStored, setArmedStored] = useState(false)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [loaded, setLoaded] = useState(false)
+  const [armedSpace, setArmedSpace] = useState({ w: 1.5, h: 2.5 });
+  const [armedStored, setArmedStored] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   // The workout text for each zone, typed in the notes column beside the plan.
-  const [notes, setNotes] = useState<Record<string, string>>({})
+  const [notes, setNotes] = useState<Record<string, string>>({});
   // The workout being edited (id once it has been saved to the catalogue), and a short confirmation message.
-  const [meta, setMeta] = useState<Meta>(EMPTY_META)
-  const [flash, setFlash] = useState('')
+  const [meta, setMeta] = useState<Meta>(EMPTY_META);
+  const [flash, setFlash] = useState("");
   // "New" asks first, in the page (the browser's own confirm dialog isn't reliable everywhere).
-  const [confirmNew, setConfirmNew] = useState(false)
+  const [confirmNew, setConfirmNew] = useState(false);
 
-  const gridRef = useRef<HTMLDivElement>(null)
+  const gridRef = useRef<HTMLDivElement>(null);
   // Stroke/drag state live in refs: they change on every pointer move and must not trigger renders themselves.
   // Stroke points are in `step` units; `step` is frozen for the stroke.
-  const stroke = useRef<{ start: Point; last: Point; base: Floor; value: Brush; step: Step } | null>(null)
+  const stroke = useRef<{
+    start: Point;
+    last: Point;
+    base: Floor;
+    value: Brush;
+    step: Step;
+  } | null>(null);
   // `mode` 'move' drags the item; 'e' / 's' / 'se' drag a resize handle of a workout space.
-  const drag = useRef<{ id: string; base: Floor; dx: number; dy: number; mode: 'move' | 'e' | 's' | 'se' } | null>(null)
+  const drag = useRef<{
+    id: string;
+    base: Floor;
+    dx: number;
+    dy: number;
+    mode: "move" | "e" | "s" | "se";
+  } | null>(null);
 
   /* ---- persistence (client only, so SSR markup stays stable) ---- */
   useEffect(() => {
+    const stock = readInventory();
+    setInv(stock);
     // Opened from the catalogue (?workout=id): load that workout instead of the autosaved one.
-    const w = loadId ? readWorkouts().find((x) => x.id === loadId) : undefined
-    const wf = w ? planOf(w) : null
+    const w = loadId ? readWorkouts().find((x) => x.id === loadId) : undefined;
+    const wf = w ? planOf(w) : null;
     if (w && wf) {
-      setFloor({ ...wf, items: restoreMissing(wf.items) })
-      setNotes({ ...w.notes })
-      setMeta({ id: w.id, name: w.name, type: w.type, focus: w.focus ?? 'lower' })
+      setFloor({ ...wf, items: restoreMissing(wf.items, stock) });
+      setNotes({ ...w.notes });
+      setMeta({
+        id: w.id,
+        name: w.name,
+        type: w.type,
+        focus: w.focus ?? "lower",
+      });
     } else {
-      const saved = deserialize(localStorage.getItem(STORAGE_KEY), defaultFloor().surface)
-      if (saved) setFloor({ ...saved, items: restoreMissing(saved.items) })
+      const saved = deserialize(
+        localStorage.getItem(STORAGE_KEY),
+        defaultFloor().surface,
+      );
+      const base = saved ?? defaultFloor();
+      setFloor({ ...base, items: restoreMissing(base.items, stock) });
       try {
-        const n = JSON.parse(localStorage.getItem(NOTES_KEY) ?? '{}')
-        if (n && typeof n === 'object') setNotes(n)
-        const m = JSON.parse(localStorage.getItem(META_KEY) ?? 'null')
-        if (m && typeof m.name === 'string') setMeta({ ...EMPTY_META, ...m })
+        const n = JSON.parse(localStorage.getItem(NOTES_KEY) ?? "{}");
+        if (n && typeof n === "object") setNotes(n);
+        const m = JSON.parse(localStorage.getItem(META_KEY) ?? "null");
+        if (m && typeof m.name === "string") setMeta({ ...EMPTY_META, ...m });
       } catch {
         /* ignore unreadable notes */
       }
     }
-    if (loadId) navigate({ to: '/', search: {}, replace: true }) // the id has been used: keep reloads clean
-    setLoaded(true)
+    if (loadId) navigate({ to: "/", search: {}, replace: true }); // the id has been used: keep reloads clean
+    setLoaded(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, []);
   useEffect(() => {
-    if (loaded) localStorage.setItem(META_KEY, JSON.stringify(meta))
-  }, [meta, loaded])
+    if (loaded) localStorage.setItem(META_KEY, JSON.stringify(meta));
+  }, [meta, loaded]);
   useEffect(() => {
-    if (loaded) localStorage.setItem(NOTES_KEY, JSON.stringify(notes))
-  }, [notes, loaded])
+    if (loaded) localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+  }, [notes, loaded]);
   useEffect(() => {
-    if (loaded) localStorage.setItem(STORAGE_KEY, serialize(floor))
-  }, [floor, loaded])
+    if (loaded) localStorage.setItem(STORAGE_KEY, serialize(floor));
+  }, [floor, loaded]);
 
   /* ---- history ---- */
   const commit = useCallback(
     (next: Floor) => {
-      if (sameCells(floor, next)) return
-      setPast((p) => [...p, floor])
-      setFuture([])
-      setFloor(next)
+      if (sameCells(floor, next)) return;
+      setPast((p) => [...p, floor]);
+      setFuture([]);
+      setFloor(next);
     },
     [floor],
-  )
+  );
   const undo = useCallback(() => {
-    if (!past.length) return
-    setFuture((f) => [floor, ...f])
-    setFloor(past[past.length - 1])
-    setPast(past.slice(0, -1))
-  }, [floor, past])
+    if (!past.length) return;
+    setFuture((f) => [floor, ...f]);
+    setFloor(past[past.length - 1]);
+    setPast(past.slice(0, -1));
+  }, [floor, past]);
   const redo = useCallback(() => {
-    if (!future.length) return
-    setPast((p) => [...p, floor])
-    setFloor(future[0])
-    setFuture(future.slice(1))
-  }, [floor, future])
-  const resetDefault = () => commit(defaultFloor())
-  const toggleWallBalls = () => commit({ ...floor, active: { ...floor.active, wallBalls: !floor.active.wallBalls } })
-  const setRig = (rig: number[]) => commit({ ...floor, active: { ...floor.active, rig: [...new Set(rig)].sort((a, b) => a - b) } })
+    if (!future.length) return;
+    setPast((p) => [...p, floor]);
+    setFloor(future[0]);
+    setFuture(future.slice(1));
+  }, [floor, future]);
+  const resetDefault = () => commit(fresh());
+  const setWallBalls = (wallBalls: number[]) =>
+    commit({
+      ...floor,
+      active: {
+        ...floor.active,
+        wallBalls: [...new Set(wallBalls)].sort((a, b) => a - b),
+      },
+    });
+  /** All targets on, or all off when they already are. */
+  const toggleWallBalls = () =>
+    setWallBalls(
+      floor.active.wallBalls.length === WALL_BALL_TARGETS.length
+        ? []
+        : WALL_BALL_TARGETS.map((_, i) => i),
+    );
+  const toggleWallBall = (i: number) =>
+    setWallBalls(
+      floor.active.wallBalls.includes(i)
+        ? floor.active.wallBalls.filter((b) => b !== i)
+        : [...floor.active.wallBalls, i],
+    );
+  /** A click on (or just beside) a wall ball target: they are thin, so the hit area is generous. */
+  const wallBallAt = (m: { x: number; y: number }) => {
+    const i = WALL_BALL_TARGETS.findIndex(
+      (t) =>
+        m.x >= t.x - 0.5 &&
+        m.x <= t.x + t.width + 0.3 &&
+        m.y >= t.y - 0.3 &&
+        m.y <= t.y + t.height + 0.3,
+    );
+    return i < 0 ? null : i;
+  };
+  const setRig = (rig: number[]) => {
+    const next = [...new Set(rig)].sort((a, b) => a - b);
+    // a bay that goes off forgets its TRX length
+    const reach = Object.fromEntries(
+      Object.entries(floor.active.reach ?? {}).filter(([k]) =>
+        next.includes(Number(k)),
+      ),
+    );
+    commit({ ...floor, active: { ...floor.active, rig: next, reach } });
+  };
   /** Switching a station on switches off the ones it can't share the rack with (barbell bay vs its pillars). */
   const withStations = (rig: number[], on: number[]) => {
-    const clash = new Set(on.flatMap((i) => rackExclusions(i)))
-    return [...rig.filter((p) => !clash.has(p)), ...on]
-  }
-  const toggleRigPart = (i: number) =>
-    setRig(floor.active.rig.includes(i) ? floor.active.rig.filter((p) => p !== i) : withStations(floor.active.rig, [i]))
+    const clash = new Set(on.flatMap((i) => rackExclusions(i)));
+    return [...rig.filter((p) => !clash.has(p)), ...on];
+  };
+  /**
+   * Click a rack station: off to on. A pull-up bay in use steps through longer safe areas (for the TRX) before
+   * switching off again: 1.0 m, 1.5 m, 2.0 m, off.
+   */
+  const toggleRigPart = (i: number) => {
+    const { rig, reach = {} } = floor.active;
+    const isPullup = BLK_BOX_RACK.parts[i]?.kind === "pullup";
+    if (!rig.includes(i)) return setRig(withStations(rig, [i]));
+    const step = isPullup
+      ? PULLUP_REACHES.indexOf(reach[i] ?? PULLUP_REACHES[0])
+      : PULLUP_REACHES.length - 1;
+    if (isPullup && step < PULLUP_REACHES.length - 1) {
+      return commit({
+        ...floor,
+        active: {
+          ...floor.active,
+          reach: { ...reach, [i]: PULLUP_REACHES[step + 1] },
+        },
+      });
+    }
+    const { [i]: _drop, ...rest } = reach;
+    commit({
+      ...floor,
+      active: { ...floor.active, rig: rig.filter((p) => p !== i), reach: rest },
+    });
+  };
   /** Switch every station of one kind on, or all off if they're all on already. */
   const toggleRigKind = (kind: StationKind) => {
-    const idx = rackPartsOfKind(kind)
-    const allOn = idx.every((i) => floor.active.rig.includes(i))
-    setRig(allOn ? floor.active.rig.filter((i) => !idx.includes(i)) : withStations(floor.active.rig, idx))
-  }
+    const idx = rackPartsOfKind(kind);
+    const allOn = idx.every((i) => floor.active.rig.includes(i));
+    setRig(
+      allOn
+        ? floor.active.rig.filter((i) => !idx.includes(i))
+        : withStations(floor.active.rig, idx),
+    );
+  };
   /* ---- the workout catalogue ---- */
   const say = (msg: string) => {
-    setFlash(msg)
-    window.setTimeout(() => setFlash(''), 2500)
-  }
+    setFlash(msg);
+    window.setTimeout(() => setFlash(""), 2500);
+  };
   const saveWorkout = (asNew: boolean) => {
-    const name = meta.name.trim()
-    if (!name) return
-    const isNew = asNew || !meta.id
+    const name = meta.name.trim();
+    if (!name) return;
+    const isNew = asNew || !meta.id;
     const w: Workout = {
       id: isNew ? newWorkoutId() : meta.id!,
       name,
       type: meta.type,
       focus: typeInfo(meta.type).hasFocus ? meta.focus : null,
-      notes: Object.fromEntries(Object.entries(notes).filter(([, v]) => typeof v === 'string')),
+      notes: Object.fromEntries(
+        Object.entries(notes).filter(([, v]) => typeof v === "string"),
+      ),
       plan: serialize(floor),
       savedAt: Date.now(),
-    }
-    upsertWorkout(w)
-    setMeta((m) => ({ ...m, id: w.id, name }))
-    say(isNew ? 'Saved to the catalogue' : 'Workout updated')
-  }
+    };
+    upsertWorkout(w);
+    setMeta((m) => ({ ...m, id: w.id, name }));
+    say(isNew ? "Saved to the catalogue" : "Workout updated");
+  };
   /** Reset everything: the layout back to the default, the text, the name and type, history and any tool state. */
   const resetEverything = () => {
-    setFloor(defaultFloor())
-    setPast([])
-    setFuture([])
-    setDraft(null)
-    setDragGuides([])
-    setNotes({})
-    setMeta(EMPTY_META)
-    setSelectedId(null)
-    setArmed(null)
-    setArmedRotated(false)
-    setArmedUpright(false)
-    setArmedStored(false)
-    setArmedSpace({ w: 1.5, h: 2.5 })
-    setTool('draw')
-    setConfirmNew(false)
-    say('Reset: new workout')
-  }
-  const clearAll = () => commit(paint(floor, rectPoints({ col: 0, row: 0 }, { col: COLS - 1, row: ROWS - 1 }), 'open')) // dead space only; surfaces stay
-  const fillAll = () => commit(paint(floor, rectPoints({ col: 0, row: 0 }, { col: COLS - 1, row: ROWS - 1 }), 'dead'))
+    setFloor(fresh());
+    setPast([]);
+    setFuture([]);
+    setDraft(null);
+    setDragGuides([]);
+    setNotes({});
+    setMeta(EMPTY_META);
+    setSelectedId(null);
+    setArmed(null);
+    setArmedRotated(false);
+    setArmedFlip(false);
+    setArmedStored(false);
+    setArmedSpace({ w: 1.5, h: 2.5 });
+    setTool("equip");
+    setConfirmNew(false);
+    say("Reset: new workout");
+  };
+  const clearAll = () =>
+    commit(
+      paint(
+        floor,
+        rectPoints({ col: 0, row: 0 }, { col: COLS - 1, row: ROWS - 1 }),
+        "open",
+      ),
+    ); // dead space only; surfaces stay
+  const fillAll = () =>
+    commit(
+      paint(
+        floor,
+        rectPoints({ col: 0, row: 0 }, { col: COLS - 1, row: ROWS - 1 }),
+        "dead",
+      ),
+    );
 
   /* ---- equipment actions ---- */
   const rotateSelected = () => {
-    const it = floor.items.find((i) => i.id === selectedId)
+    const it = floor.items.find((i) => i.id === selectedId);
     if (!it) {
       // A workout space turns by swapping its width and height.
-      if (armed && typeOf(armed).resizable) return setArmedSpace((s) => ({ w: s.h, h: s.w }))
-      return setArmedRotated((r) => !r)
+      if (armed && typeOf(armed).resizable)
+        return setArmedSpace((s) => ({ w: s.h, h: s.w }));
+      if (armed && turnsInQuarters(armed)) {
+        const t = quarterTurn(armed, {
+          rotated: armedRotated,
+          flip: armedFlip,
+        });
+        setArmedRotated(t.rotated);
+        return setArmedFlip(t.flip);
+      }
+      return setArmedRotated((r) => !r);
     }
     if (typeOf(it.type).resizable) {
-      const fp = footprint(it)
-      const turned = { ...it, w: fp.h, h: fp.w }
-      Object.assign(turned, clampPos(it.x, it.y, fp.h, fp.w))
-      return commit({ ...floor, items: floor.items.map((i) => (i.id === it.id ? turned : i)) })
+      const fp = footprint(it);
+      const turned = { ...it, w: fp.h, h: fp.w };
+      Object.assign(turned, clampPos(it.x, it.y, fp.h, fp.w));
+      return commit({
+        ...floor,
+        items: floor.items.map((i) => (i.id === it.id ? turned : i)),
+      });
     }
-    const next = { ...it, rotated: !it.rotated }
-    const { w, h } = footprint(next)
-    Object.assign(next, clampPos(it.x, it.y, w, h))
-    commit({ ...floor, items: floor.items.map((i) => (i.id === it.id ? next : i)) })
-  }
-  const selected = floor.items.find((i) => i.id === selectedId)
+    // Directional machines turn in quarter steps (four facings); the rest flip between lengthways and across.
+    const next: Placed = turnsInQuarters(it.type)
+      ? { ...it, ...quarterTurn(it.type, it) }
+      : { ...it, rotated: !it.rotated };
+    const { w, h } = footprint(next);
+    Object.assign(next, clampPos(it.x, it.y, w, h));
+    commit({
+      ...floor,
+      items: floor.items.map((i) => (i.id === it.id ? next : i)),
+    });
+  };
+  const selected = floor.items.find((i) => i.id === selectedId);
   // The workout space being sized: the selected one, or the one about to be placed.
-  const sizeTarget = selected ? (typeOf(selected.type).resizable ? selected : null) : armed && typeOf(armed).resizable ? armed : null
-  const curSize = selected && sizeTarget ? footprint(selected) : armedSpace
+  const sizeTarget = selected
+    ? typeOf(selected.type).resizable
+      ? selected
+      : null
+    : armed && typeOf(armed).resizable
+      ? armed
+      : null;
+  const curSize = selected && sizeTarget ? footprint(selected) : armedSpace;
   const setSize = (w: number, h: number) => {
-    if (!(w >= MIN_SPACE) || !(h >= MIN_SPACE)) return // ignore empty / nonsense input
-    const nw = Math.min(WIDTH_M, Math.round(w * 10) / 10)
-    const nh = Math.min(HEIGHT_M, Math.round(h * 10) / 10)
+    if (!(w >= MIN_SPACE) || !(h >= MIN_SPACE)) return; // ignore empty / nonsense input
+    const nw = Math.min(WIDTH_M, Math.round(w * 10) / 10);
+    const nh = Math.min(HEIGHT_M, Math.round(h * 10) / 10);
     if (selected && typeOf(selected.type).resizable) {
-      const moved = { ...selected, w: nw, h: nh, ...clampPos(selected.x, selected.y, nw, nh) }
-      commit({ ...floor, items: floor.items.map((i) => (i.id === selected.id ? moved : i)) })
-    } else setArmedSpace({ w: nw, h: nh })
-  }
+      const moved = {
+        ...selected,
+        w: nw,
+        h: nh,
+        ...clampPos(selected.x, selected.y, nw, nh),
+      };
+      commit({
+        ...floor,
+        items: floor.items.map((i) => (i.id === selected.id ? moved : i)),
+      });
+    } else setArmedSpace({ w: nw, h: nh });
+  };
   /** Start dragging a resize handle of the selected workout space. */
-  const startResize = (e: React.PointerEvent, it: Placed, mode: 'e' | 's' | 'se') => {
-    e.stopPropagation()
-    if (e.button !== 0 && e.pointerType === 'mouse') return
-    gridRef.current!.setPointerCapture(e.pointerId) // the grid keeps receiving the moves, like a normal drag
-    drag.current = { id: it.id, base: floor, dx: 0, dy: 0, mode }
-  }
-  /** Type whose upright setting the Upright button/key currently acts on (selected item, else the armed type). */
-  const uprightType = selected ? selected.type : armed
-  const canUpright = !!uprightType && !!typeOf(uprightType).upright
-  const isUpright = selected ? !!selected.upright : armedUpright
-  const toggleUpright = () => {
-    if (!canUpright) return
-    if (!selected) return setArmedUpright((u) => !u)
-    const next = { ...selected, upright: !selected.upright }
-    const { w, h } = footprint(next)
-    Object.assign(next, clampPos(selected.x, selected.y, w, h))
-    commit({ ...floor, items: floor.items.map((i) => (i.id === selected.id ? next : i)) })
-  }
-  const isStoredMark = selected ? !!selected.stored : armedStored
+  const startResize = (
+    e: React.PointerEvent,
+    it: Placed,
+    mode: "e" | "s" | "se",
+  ) => {
+    e.stopPropagation();
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    gridRef.current!.setPointerCapture(e.pointerId); // the grid keeps receiving the moves, like a normal drag
+    drag.current = { id: it.id, base: floor, dx: 0, dy: 0, mode };
+  };
+  // Stored equipment that can stand on its end (RowErgs) does so; in use it lies flat. There is no separate switch.
+  const standsWhenStored = (type: EquipmentTypeId) => !!typeOf(type).upright;
+  // Plyo boxes: the safe area is situational (all around / one side / one direction).
+  const canSafeMode = !!selected && !!typeOf(selected.type).situationalSafe;
+  const SAFE_MODES = [undefined, "side", "direction"] as const;
+  const SAFE_LABEL = {
+    all: "All around",
+    side: "One side",
+    direction: "One direction",
+  };
+  const safeNow = (selected?.safeMode ?? "all") as keyof typeof SAFE_LABEL;
+  const cycleSafeMode = () => {
+    if (!selected || !canSafeMode) return;
+    const next =
+      SAFE_MODES[
+        (SAFE_MODES.indexOf(selected.safeMode) + 1) % SAFE_MODES.length
+      ];
+    commit({
+      ...floor,
+      items: floor.items.map((i) =>
+        i.id === selected.id ? { ...i, safeMode: next } : i,
+      ),
+    });
+  };
+  const isStoredMark = selected ? !!selected.stored : armedStored;
   const toggleStored = () => {
-    if (!selected) return armed ? setArmedStored((v) => !v) : undefined
-    commit({ ...floor, items: floor.items.map((i) => (i.id === selected.id ? { ...i, stored: !i.stored } : i)) })
-  }
+    if (!selected) return armed ? setArmedStored((v) => !v) : undefined;
+    const next: Placed = { ...selected, stored: !selected.stored };
+    if (standsWhenStored(next.type)) {
+      next.upright = !!next.stored;
+      const { w, h } = footprint(next);
+      Object.assign(next, clampPos(next.x, next.y, w, h));
+    }
+    commit({
+      ...floor,
+      items: floor.items.map((i) => (i.id === selected.id ? next : i)),
+    });
+  };
+  // Permanent equipment already stored where it belongs has nothing left to remove.
+  const atHome = (() => {
+    if (!selected || !isPermanent(selected.type)) return false;
+    const h = storedHome(selected, floor.items);
+    return (
+      !!selected.stored &&
+      selected.x === h.x &&
+      selected.y === h.y &&
+      selected.rotated === h.rotated &&
+      !!selected.upright === !!h.upright
+    );
+  })();
   const removeSelected = () => {
-    // Permanent equipment (everything but benches, soft mats and workout spaces) has to be somewhere: never deletable.
-    if (!selectedId || (selected && isPermanent(selected.type))) return
-    commit({ ...floor, items: floor.items.filter((i) => i.id !== selectedId) })
-    setSelectedId(null)
-  }
+    if (!selected) return;
+    // Permanent equipment (everything but benches, soft mats and workout spaces) has to be somewhere: "removing" it
+    // puts it back in its stored place instead.
+    if (isPermanent(selected.type)) {
+      const home = storedHome(selected, floor.items);
+      return commit({
+        ...floor,
+        items: floor.items.map((i) => (i.id === selected.id ? home : i)),
+      });
+    }
+    if (!selectedId) return;
+    commit({ ...floor, items: floor.items.filter((i) => i.id !== selectedId) });
+    setSelectedId(null);
+  };
   const removeAllEquipment = () => {
-    commit({ ...floor, items: floor.items.filter((i) => isPermanent(i.type)) })
-    setSelectedId(null)
-  }
+    commit({ ...floor, items: floor.items.filter((i) => isPermanent(i.type)) });
+    setSelectedId(null);
+  };
+  // Permanent equipment can't be copied (the gym owns exactly that many): "duplicating" it takes one that is still
+  // stored and puts it into use next to the selected one.
+  const spare =
+    selected && isPermanent(selected.type)
+      ? floor.items.find(
+          (i) => i.type === selected.type && i.stored && i.id !== selected.id,
+        )
+      : undefined;
+  const canCopy = !!selected && (isPermanent(selected.type) ? !!spare : true);
+  // A copy of the selected item (space, bench, mat) 0.5 m down and right, selected so D again keeps cascading.
+  const duplicateSelected = () => {
+    if (!selected || !canCopy) return;
+    if (spare) {
+      const taken: Placed = {
+        ...selected,
+        id: spare.id,
+        stored: false,
+        upright: false,
+      }; // in use: lying flat
+      const { w, h } = footprint(taken);
+      Object.assign(taken, clampPos(selected.x + 0.5, selected.y + 0.5, w, h));
+      commit({
+        ...floor,
+        items: floor.items.map((i) => (i.id === spare.id ? taken : i)),
+      });
+      setSelectedId(taken.id);
+      return;
+    }
+    if (
+      floor.items.filter((i) => i.type === selected.type).length >=
+      owned(selected.type)
+    )
+      return; // none left to place
+    const { w, h } = footprint(selected);
+    const copy: Placed = {
+      ...selected,
+      id: newId(selected.type),
+      ...clampPos(selected.x + 0.5, selected.y + 0.5, w, h),
+    };
+    commit({ ...floor, items: [...floor.items, copy] });
+    setSelectedId(copy.id);
+  };
   const armType = (id: EquipmentTypeId) => {
-    setTool('equip')
-    setSelectedId(null)
-    setArmedRotated(false) // every pick starts horizontal; press R to turn it
-    setArmedUpright(false) // ...and flat; press U for upright
-    setArmedStored(false) // ...and in use; press S to place it as stored
-    setArmed((a) => (a === id ? null : id))
-  }
+    setTool("equip");
+    setSelectedId(null);
+    setArmedRotated(false); // every pick starts horizontal; press R to turn it
+    setArmedFlip(false);
+    setArmedStored(false); // ...and in use; press S to place it as stored
+    setArmed((a) => (a === id ? null : id));
+  };
 
   /* ---- keyboard shortcuts (handler kept in a ref so it always sees fresh state) ---- */
-  const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {})
+  const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   onKeyRef.current = (e) => {
     // Typing in a notes box must not trigger tool shortcuts (or undo of the plan).
-    const t = e.target as HTMLElement | null
-    if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return
-    const mod = e.metaKey || e.ctrlKey
-    const k = e.key.toLowerCase()
-    if (mod && k === 'z') {
-      e.preventDefault()
-      e.shiftKey ? redo() : undo()
-    } else if (mod && k === 'y') {
-      e.preventDefault()
-      redo()
+    const t = e.target as HTMLElement | null;
+    if (
+      t &&
+      (t.tagName === "TEXTAREA" ||
+        t.tagName === "INPUT" ||
+        t.tagName === "SELECT" ||
+        t.isContentEditable)
+    )
+      return;
+    const mod = e.metaKey || e.ctrlKey;
+    const k = e.key.toLowerCase();
+    if (mod && k === "z") {
+      e.preventDefault();
+      e.shiftKey ? redo() : undo();
+    } else if (mod && k === "y") {
+      e.preventDefault();
+      redo();
     } else if (!mod && !e.altKey) {
-      if (k === 'd') setTool((t) => (t === 'draw' ? 'equip' : 'draw'))
-      else if (k === 'e') setTool('equip')
-      else if (k === 'g') setStep((s) => (s === SUB ? 1 : SUB))
-      else if (k === 'escape') {
-        setConfirmNew(false)
-        setArmed(null)
-        setSelectedId(null)
-      } else if (tool === 'equip') {
-        if (k === 'r') rotateSelected()
-        else if (k === 'u') toggleUpright()
-        else if (k === 's') toggleStored()
-        else if (k === 'backspace' || k === 'delete') {
-          e.preventDefault()
-          removeSelected()
+      if (k === "e") setTool("equip");
+      else if (k === "g") setStep((s) => (s === SUB ? 1 : SUB));
+      else if (k === "escape") {
+        setConfirmNew(false);
+        setArmed(null);
+        setSelectedId(null);
+      } else if (tool === "equip") {
+        if (k === "r") rotateSelected();
+        else if (k === "d") duplicateSelected();
+        else if (k === "a") cycleSafeMode();
+        else if (k === "s") toggleStored();
+        else if (k === "backspace" || k === "delete") {
+          e.preventDefault();
+          removeSelected();
         }
       } else {
-        if (k === 'b') setShape('brush')
-        else if (k === 'l') setShape('line')
-        else if (k === 'r') setShape('rect')
-        else if (k === 'x') setValue((v) => (v === 'dead' ? 'open' : 'dead'))
-        else if (k === 'u') setValue('turf')
-        else if (k === 't') setValue('tile')
+        if (k === "b") setShape("brush");
+        else if (k === "l") setShape("line");
+        else if (k === "r") setShape("rect");
+        else if (k === "x") setValue((v) => (v === "dead" ? "open" : "dead"));
+        else if (k === "u") setValue("turf");
+        else if (k === "t") setValue("tile");
       }
     }
-  }
+  };
   useEffect(() => {
-    const track = (e: KeyboardEvent) => setAltHeld(e.altKey)
-    const off = () => setAltHeld(false)
-    window.addEventListener('keydown', track)
-    window.addEventListener('keyup', track)
-    window.addEventListener('blur', off)
+    const track = (e: KeyboardEvent) => setAltHeld(e.altKey);
+    const off = () => setAltHeld(false);
+    window.addEventListener("keydown", track);
+    window.addEventListener("keyup", track);
+    window.addEventListener("blur", off);
     return () => {
-      window.removeEventListener('keydown', track)
-      window.removeEventListener('keyup', track)
-      window.removeEventListener('blur', off)
-    }
-  }, [])
+      window.removeEventListener("keydown", track);
+      window.removeEventListener("keyup", track);
+      window.removeEventListener("blur", off);
+    };
+  }, []);
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => onKeyRef.current(e)
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [])
+    const handler = (e: KeyboardEvent) => onKeyRef.current(e);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   /* ---- pointer handling ---- */
   const metres = (e: React.PointerEvent): Metres => {
-    const r = gridRef.current!.getBoundingClientRect()
-    return { x: ((e.clientX - r.left) / r.width) * WIDTH_M, y: ((e.clientY - r.top) / r.height) * HEIGHT_M }
-  }
+    const r = gridRef.current!.getBoundingClientRect();
+    return {
+      x: ((e.clientX - r.left) / r.width) * WIDTH_M,
+      y: ((e.clientY - r.top) / r.height) * HEIGHT_M,
+    };
+  };
 
   const cellAt = (e: React.PointerEvent, st: Step): Point => {
-    const r = gridRef.current!.getBoundingClientRect()
-    const cols = COLS / st
-    const rows = ROWS / st
-    const clamp = (n: number, max: number) => Math.min(max - 1, Math.max(0, n))
+    const r = gridRef.current!.getBoundingClientRect();
+    const cols = COLS / st;
+    const rows = ROWS / st;
+    const clamp = (n: number, max: number) => Math.min(max - 1, Math.max(0, n));
     return {
       col: clamp(Math.floor(((e.clientX - r.left) / r.width) * cols), cols),
       row: clamp(Math.floor(((e.clientY - r.top) / r.height) * rows), rows),
-    }
-  }
+    };
+  };
 
   /** Where an armed item lands when the pointer is at `m` (centred on the pointer, inside the room). */
-  const placementAt = (m: Metres, type: EquipmentTypeId, rotated: boolean, upright: boolean, size?: { w: number; h: number }) => {
-    const { w, h } = size ?? sizeOf(type, rotated, upright)
-    const free = clampPos(m.x - w / 2, m.y - h / 2, w, h)
+  const placementAt = (
+    m: Metres,
+    type: EquipmentTypeId,
+    rotated: boolean,
+    upright: boolean,
+    size?: { w: number; h: number },
+  ) => {
+    const { w, h } = size ?? sizeOf(type, rotated, upright);
+    const free = clampPos(m.x - w / 2, m.y - h / 2, w, h);
     // Stackable types (plyo boxes) snap onto an overlapped unit of the same type.
-    const stacked = snapToStack(floor.items, null, { id: 'probe', type, rotated, upright, ...size, ...free })
-    if (stacked.x !== free.x || stacked.y !== free.y || altHeld) return { ...stacked, guides: [] as Guide[] }
+    const stacked = snapToStack(floor.items, null, {
+      id: "probe",
+      type,
+      rotated,
+      upright,
+      ...size,
+      ...free,
+    });
+    if (stacked.x !== free.x || stacked.y !== free.y || altHeld)
+      return { ...stacked, guides: [] as Guide[] };
     // Otherwise guided snapping: align with, and space evenly from, the same kind of equipment nearby.
-    const sn = snapRect(floor.items, null, type, { ...free, w, h })
-    return { ...clampPos(sn.x, sn.y, w, h), guides: sn.guides }
-  }
+    const sn = snapRect(floor.items, null, type, { ...free, w, h });
+    return { ...clampPos(sn.x, sn.y, w, h), guides: sn.guides };
+  };
 
   const equipDown = (e: React.PointerEvent) => {
-    const m = metres(e)
-    const hit = byLayer(floor.items).reverse().find((it) => {
-      const r = footprint(it)
-      return m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h
-    })
-    const placedOfArmed = armed ? floor.items.filter((i) => i.type === armed).length : 0
+    const m = metres(e);
+    const hit = byLayer(floor.items)
+      .reverse()
+      .find((it) => {
+        const r = footprint(it);
+        return m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h;
+      });
+    const placedOfArmed = armed
+      ? floor.items.filter((i) => i.type === armed).length
+      : 0;
     // An armed type always places, even over existing items (that's how a stored RowErg ends up on a SkiErg).
     // Disarm (Esc or the chip) to select and drag existing items.
-    if (armed && placedOfArmed < typeOf(armed).count) {
-      const upright = armedUpright && !!typeOf(armed).upright
-      const place = placementAt(m, armed, armedRotated, upright, typeOf(armed).resizable ? armedSpace : undefined)
+    if (armed && placedOfArmed < owned(armed)) {
+      const upright = armedStored && standsWhenStored(armed);
+      const place = placementAt(
+        m,
+        armed,
+        armedRotated,
+        upright,
+        typeOf(armed).resizable ? armedSpace : undefined,
+      );
       const item: Placed = {
         id: newId(armed),
         type: armed,
         rotated: armedRotated,
+        ...(turnsInQuarters(armed) && armedFlip ? { flip: true } : {}),
         upright,
         stored: armedStored,
         ...(typeOf(armed).resizable ? armedSpace : {}),
         x: place.x,
         y: place.y,
-      }
-      commit({ ...floor, items: [...floor.items, item] })
-      setSelectedId(item.id)
-      if (placedOfArmed + 1 >= typeOf(armed).count) setArmed(null)
+      };
+      commit({ ...floor, items: [...floor.items, item] });
+      setSelectedId(item.id);
+      if (placedOfArmed + 1 >= owned(armed)) setArmed(null);
     } else if (hit) {
-      setSelectedId(hit.id)
-      setArmed(null)
-      drag.current = { id: hit.id, base: floor, dx: m.x - hit.x, dy: m.y - hit.y, mode: 'move' }
+      setSelectedId(hit.id);
+      setArmed(null);
+      drag.current = {
+        id: hit.id,
+        base: floor,
+        dx: m.x - hit.x,
+        dy: m.y - hit.y,
+        mode: "move",
+      };
     } else {
-      const part = rackPartAt(m)
-      if (part !== null) toggleRigPart(part)
-      else setSelectedId(null)
+      const part = rackPartAt(m);
+      const ball = wallBallAt(m);
+      if (part !== null) toggleRigPart(part);
+      else if (ball !== null) toggleWallBall(ball);
+      else setSelectedId(null);
     }
-  }
+  };
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 && e.pointerType === 'mouse') return
-    e.currentTarget.setPointerCapture(e.pointerId)
-    if (tool === 'equip') return equipDown(e)
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    if (tool === "equip") return equipDown(e);
     // Hold Alt/Option to flip between marking and clearing for this stroke.
-    const v: Brush = e.altKey ? oppositeBrush(value) : value
-    const p = cellAt(e, step)
-    stroke.current = { start: p, last: p, base: floor, value: v, step }
-    setDraft(paint(floor, expand([p], step), v))
-  }
+    const v: Brush = e.altKey ? oppositeBrush(value) : value;
+    const p = cellAt(e, step);
+    stroke.current = { start: p, last: p, base: floor, value: v, step };
+    setDraft(paint(floor, expand([p], step), v));
+  };
 
   const onPointerMove = (e: React.PointerEvent) => {
-    if (tool === 'equip') {
-      const m = metres(e)
-      setHoverM(m)
-      const d = drag.current
-      if (d && d.mode !== 'move') {
+    if (tool === "equip") {
+      const m = metres(e);
+      setHoverM(m);
+      const d = drag.current;
+      if (d && d.mode !== "move") {
         // Resizing a workout space: the edge follows the pointer, to the nearest 0.1 m.
-        const clampTo = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
-        let resizeGuides: Guide[] = []
+        const clampTo = (v: number, lo: number, hi: number) =>
+          Math.min(hi, Math.max(lo, v));
+        let resizeGuides: Guide[] = [];
         const grown = (it: Placed): Placed => {
-          const fp = footprint(it)
-          let w = d.mode === 's' ? fp.w : clampTo(Math.round((m.x - it.x) * 10) / 10, MIN_SPACE, WIDTH_M - it.x)
-          let h = d.mode === 'e' ? fp.h : clampTo(Math.round((m.y - it.y) * 10) / 10, MIN_SPACE, HEIGHT_M - it.y)
+          const fp = footprint(it);
+          let w =
+            d.mode === "s"
+              ? fp.w
+              : clampTo(
+                  Math.round((m.x - it.x) * 10) / 10,
+                  MIN_SPACE,
+                  WIDTH_M - it.x,
+                );
+          let h =
+            d.mode === "e"
+              ? fp.h
+              : clampTo(
+                  Math.round((m.y - it.y) * 10) / 10,
+                  MIN_SPACE,
+                  HEIGHT_M - it.y,
+                );
           if (!e.altKey) {
             // snap the dragged edge to the same kind of equipment: its edges, centres, or its size
-            const sn = snapSize(d.base.items, it.id, it.type, { x: it.x, y: it.y, w, h }, { x: d.mode !== 's', y: d.mode !== 'e' })
-            w = clampTo(sn.w, MIN_SPACE, WIDTH_M - it.x)
-            h = clampTo(sn.h, MIN_SPACE, HEIGHT_M - it.y)
-            resizeGuides = sn.guides
+            const sn = snapSize(
+              d.base.items,
+              it.id,
+              it.type,
+              { x: it.x, y: it.y, w, h },
+              { x: d.mode !== "s", y: d.mode !== "e" },
+            );
+            w = clampTo(sn.w, MIN_SPACE, WIDTH_M - it.x);
+            h = clampTo(sn.h, MIN_SPACE, HEIGHT_M - it.y);
+            resizeGuides = sn.guides;
           }
-          return { ...it, w, h }
-        }
-        const resized = d.base.items.map((i) => (i.id === d.id ? grown(i) : i))
-        setDragGuides(resizeGuides)
-        setDraft({ ...d.base, items: resized })
+          return { ...it, w, h };
+        };
+        const resized = d.base.items.map((i) => (i.id === d.id ? grown(i) : i));
+        setDragGuides(resizeGuides);
+        setDraft({ ...d.base, items: resized });
       } else if (d) {
-        const it = d.base.items.find((i) => i.id === d.id)!
-        const { w, h } = footprint(it)
-        const free = clampPos(m.x - d.dx, m.y - d.dy, w, h)
-        const stacked = snapToStack(d.base.items, d.id, { ...it, ...free })
-        let pos: { x: number; y: number } = stacked
-        let guides: Guide[] = []
+        const it = d.base.items.find((i) => i.id === d.id)!;
+        const { w, h } = footprint(it);
+        const free = clampPos(m.x - d.dx, m.y - d.dy, w, h);
+        const stacked = snapToStack(d.base.items, d.id, { ...it, ...free });
+        let pos: { x: number; y: number } = stacked;
+        let guides: Guide[] = [];
         // Guided snapping (hold Alt to move freely); stacking onto a plyo box takes priority.
         if (!e.altKey && stacked.x === free.x && stacked.y === free.y) {
-          const sn = snapRect(d.base.items, d.id, it.type, { ...free, w, h })
-          pos = clampPos(sn.x, sn.y, w, h)
-          guides = sn.guides
+          const sn = snapRect(d.base.items, d.id, it.type, { ...free, w, h });
+          pos = clampPos(sn.x, sn.y, w, h);
+          guides = sn.guides;
         }
-        setDragGuides(guides)
-        setDraft({ ...d.base, items: d.base.items.map((i) => (i.id === d.id ? { ...i, ...pos } : i)) })
+        setDragGuides(guides);
+        // Stored equipment dragged off the side walls is about to be used: activate it (RowErgs lie flat again).
+        let moved: Placed = { ...it, ...pos };
+        if (it.stored && !nearSideWall({ x: pos.x, w })) {
+          moved = { ...moved, stored: false, upright: false };
+          const f = footprint(moved);
+          moved = { ...moved, ...clampPos(pos.x, pos.y, f.w, f.h) };
+        }
+        setDraft({
+          ...d.base,
+          items: d.base.items.map((i) => (i.id === d.id ? moved : i)),
+        });
       }
-      return
+      return;
     }
-    const s = stroke.current
-    const p = cellAt(e, s?.step ?? step)
-    setHover((h) => (h && h.col === p.col && h.row === p.row ? h : p))
-    if (!s || (p.col === s.last.col && p.row === s.last.row)) return
-    const prev = s.last // capture now: the updater below runs after s.last is reassigned
-    const st = s.step
-    if (shape === 'brush') {
+    const s = stroke.current;
+    const p = cellAt(e, s?.step ?? step);
+    setHover((h) => (h && h.col === p.col && h.row === p.row ? h : p));
+    if (!s || (p.col === s.last.col && p.row === s.last.row)) return;
+    const prev = s.last; // capture now: the updater below runs after s.last is reassigned
+    const st = s.step;
+    if (shape === "brush") {
       // Interpolate so fast drags don't leave gaps.
-      setDraft((d) => paint(d ?? s.base, expand(linePoints(prev, p), st), s.value))
+      setDraft((d) =>
+        paint(d ?? s.base, expand(linePoints(prev, p), st), s.value),
+      );
     } else {
-      const pts = shape === 'line' ? linePoints(s.start, p) : rectPoints(s.start, p)
-      setDraft(paint(s.base, expand(pts, st), s.value))
+      const pts =
+        shape === "line" ? linePoints(s.start, p) : rectPoints(s.start, p);
+      setDraft(paint(s.base, expand(pts, st), s.value));
     }
-    s.last = p
-  }
+    s.last = p;
+  };
 
   const endStroke = () => {
-    if (!stroke.current && !drag.current) return
-    stroke.current = null
-    drag.current = null
-    setDragGuides([])
-    if (draft) commit(draft)
-    setDraft(null)
-  }
+    if (!stroke.current && !drag.current) return;
+    stroke.current = null;
+    drag.current = null;
+    setDragGuides([]);
+    if (draft) commit(draft);
+    setDraft(null);
+  };
 
-  const shown = draft ?? floor
-  const dead = countDead(shown)
-  const deadM2 = dead * CELL_AREA
-  const turfM2 = countTurf(shown) * CELL_AREA
-  const spaceCount = shown.items.filter((i) => typeOf(i.type).marker).length
-  const equipmentCount = shown.items.length - spaceCount
-  const storedCount = shown.items.filter((i) => i.stored).length
-  const totalM2 = WIDTH_M * HEIGHT_M
-  const hoverStep = stroke.current?.step ?? step
+  const shown = draft ?? floor;
+  // Everything switched on: placed material not stored, workout spaces, rack stations and wall ball targets.
+  const alloc = (() => {
+    const inUse = shown.items.filter((i) => !i.stored);
+    const spaces = inUse.filter((i) => typeOf(i.type).marker).length;
+    const gear = inUse.length - spaces;
+    const rack = shown.active.rig.length;
+    const balls = shown.active.wallBalls.length;
+    return { gear, spaces, rack, balls, total: gear + spaces + rack + balls };
+  })();
+  const hoverStep = stroke.current?.step ?? step;
   const cellEls = useMemo(
-    () => shown.cells.map((c, i) => <div key={i} className={`cell ${c} ${shown.surface[i]}`} />),
+    () =>
+      shown.cells.map((c, i) => (
+        <div key={i} className={`cell ${c} ${shown.surface[i]}`} />
+      )),
     [shown.cells, shown.surface],
-  )
-  const fields = noteFields(meta.type)
+  );
+  const fields = noteFields(meta.type);
 
   const conflictIds = useMemo(
-    () => new Set(shown.items.filter((it) => hasConflict(shown, it, shown.items)).map((i) => i.id)),
+    () =>
+      new Set(
+        shown.items
+          .filter((it) => hasConflict(shown, it, shown.items))
+          .map((i) => i.id),
+      ),
     [shown],
-  )
-  const warnIds = useMemo(() => safetyWarnings(shown.items, shown.active), [shown])
-  const countOf = (id: EquipmentTypeId) => shown.items.filter((i) => i.type === id).length
+  );
+  const warnIds = useMemo(
+    () => safetyWarnings(shown.items, shown.active),
+    [shown],
+  );
+  const countOf = (id: EquipmentTypeId) =>
+    shown.items.filter((i) => i.type === id).length;
 
   // Ghost preview of the armed item under the pointer.
   const ghostPlace =
-    tool === 'equip' && armed && hoverM && !drag.current && countOf(armed) < typeOf(armed).count
+    tool === "equip" &&
+    armed &&
+    hoverM &&
+    !drag.current &&
+    countOf(armed) < owned(armed)
       ? placementAt(
           hoverM,
           armed,
           armedRotated,
-          armedUpright && !!typeOf(armed).upright,
+          armedStored && standsWhenStored(armed),
           typeOf(armed).resizable ? armedSpace : undefined,
         )
-      : null
+      : null;
   const ghost: Placed | null =
     ghostPlace && armed
       ? {
-          id: 'ghost',
+          id: "ghost",
           type: armed,
           rotated: armedRotated,
-          upright: armedUpright && !!typeOf(armed).upright,
+          flip: armedFlip && turnsInQuarters(armed),
+          upright: armedStored && standsWhenStored(armed),
           stored: armedStored,
           ...(typeOf(armed).resizable ? armedSpace : {}),
           x: ghostPlace.x,
           y: ghostPlace.y,
         }
-      : null
-  const guides = dragGuides.length ? dragGuides : (ghostPlace?.guides ?? [])
+      : null;
+  const guides = dragGuides.length ? dragGuides : (ghostPlace?.guides ?? []);
   const guideStyle = (g: Guide) => ({
     left: pct(Math.min(g.x1, g.x2), WIDTH_M),
     top: pct(Math.min(g.y1, g.y2), HEIGHT_M),
-    width: g.x1 === g.x2 ? '1px' : pct(Math.abs(g.x2 - g.x1), WIDTH_M),
-    height: g.y1 === g.y2 ? '1px' : pct(Math.abs(g.y2 - g.y1), HEIGHT_M),
-  })
-  const ghostConflict = ghost ? hasConflict(shown, ghost, shown.items) : false
+    width: g.x1 === g.x2 ? "1px" : pct(Math.abs(g.x2 - g.x1), WIDTH_M),
+    height: g.y1 === g.y2 ? "1px" : pct(Math.abs(g.y2 - g.y1), HEIGHT_M),
+  });
+  const ghostConflict = ghost ? hasConflict(shown, ghost, shown.items) : false;
 
   const rectStyle = (r: { x: number; y: number; w: number; h: number }) => ({
     left: pct(r.x, WIDTH_M),
     top: pct(r.y, HEIGHT_M),
     width: pct(r.w, WIDTH_M),
     height: pct(r.h, HEIGHT_M),
-  })
+  });
 
-  const menuRef = useRef<HTMLDetailsElement>(null)
+  const menuRef = useRef<HTMLDetailsElement>(null);
   const closeMenu = () => {
-    if (menuRef.current) menuRef.current.open = false
-  }
+    if (menuRef.current) menuRef.current.open = false;
+  };
   // tap outside the "More" menu closes it
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
-      const m = menuRef.current
-      if (m?.open && !m.contains(e.target as Node)) m.open = false
-    }
-    document.addEventListener('pointerdown', onDown)
-    return () => document.removeEventListener('pointerdown', onDown)
-  }, [])
+      const m = menuRef.current;
+      if (m?.open && !m.contains(e.target as Node)) m.open = false;
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, []);
 
   return (
     <div className="editor">
@@ -633,7 +991,9 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
         <select
           className="field"
           value={meta.type}
-          onChange={(e) => setMeta((m) => ({ ...m, type: e.target.value as WorkoutType }))}
+          onChange={(e) =>
+            setMeta((m) => ({ ...m, type: e.target.value as WorkoutType }))
+          }
           aria-label="Workout type"
         >
           {WORKOUT_TYPES.map((t) => (
@@ -646,7 +1006,9 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
           <select
             className="field"
             value={meta.focus}
-            onChange={(e) => setMeta((m) => ({ ...m, focus: e.target.value as Focus }))}
+            onChange={(e) =>
+              setMeta((m) => ({ ...m, focus: e.target.value as Focus }))
+            }
             aria-label="Focus"
           >
             {FOCUSES.map((f) => (
@@ -656,8 +1018,12 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
             ))}
           </select>
         )}
-        <button className="btn primary" onClick={() => saveWorkout(false)} disabled={!meta.name.trim()}>
-          {meta.id ? 'Update workout' : 'Save workout'}
+        <button
+          className="btn primary"
+          onClick={() => saveWorkout(false)}
+          disabled={!meta.name.trim()}
+        >
+          {meta.id ? "Update workout" : "Save workout"}
         </button>
         <details className="menu" ref={menuRef}>
           <summary className="btn" aria-label="More actions">
@@ -668,8 +1034,8 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
               <button
                 className="menu-item"
                 onClick={() => {
-                  saveWorkout(true)
-                  closeMenu()
+                  saveWorkout(true);
+                  closeMenu();
                 }}
                 disabled={!meta.name.trim()}
               >
@@ -679,8 +1045,8 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
             <button
               className="menu-item"
               onClick={() => {
-                setConfirmNew(true)
-                closeMenu()
+                setConfirmNew(true);
+                closeMenu();
               }}
             >
               New workout…
@@ -688,8 +1054,8 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
             <button
               className="menu-item"
               onClick={() => {
-                resetDefault()
-                closeMenu()
+                resetDefault();
+                closeMenu();
               }}
               disabled={sameCells(floor, defaultFloor())}
             >
@@ -698,8 +1064,8 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
             <button
               className="menu-item"
               onClick={() => {
-                removeAllEquipment()
-                closeMenu()
+                removeAllEquipment();
+                closeMenu();
               }}
               disabled={!floor.items.some((i) => !isPermanent(i.type))}
               title="Removes the added benches, soft mats and workout spaces. The gym's equipment stays."
@@ -709,8 +1075,8 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
             <button
               className="menu-item"
               onClick={() => {
-                setTool('draw')
-                closeMenu()
+                setTool("draw");
+                closeMenu();
               }}
             >
               Edit floor (dead space, turf)…
@@ -723,9 +1089,15 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
       </section>
 
       {confirmNew && (
-        <div className="confirm" role="alertdialog" aria-label="Confirm new workout">
+        <div
+          className="confirm"
+          role="alertdialog"
+          aria-label="Confirm new workout"
+        >
           <b>Reset everything?</b>
-          <span className="confirm-text">Layout, text and name are cleared.</span>
+          <span className="confirm-text">
+            Layout, text and name are cleared.
+          </span>
           <button className="btn danger" onClick={resetEverything} autoFocus>
             Yes, reset
           </button>
@@ -735,19 +1107,29 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
         </div>
       )}
 
-      {tool === 'draw' ? (
+      {tool === "draw" ? (
         <section className="panel floor-tools" aria-label="Floor tools">
           <div className="row">
             <b>Edit floor</b>
             <span className="muted">Mark dead space and the turf</span>
             <span className="spacer" />
-            <button className="btn" onClick={undo} disabled={!past.length} title="Undo (⌘Z)">
+            <button
+              className="btn"
+              onClick={undo}
+              disabled={!past.length}
+              title="Undo (⌘Z)"
+            >
               Undo
             </button>
-            <button className="btn" onClick={redo} disabled={!future.length} title="Redo (⇧⌘Z)">
+            <button
+              className="btn"
+              onClick={redo}
+              disabled={!future.length}
+              title="Redo (⇧⌘Z)"
+            >
               Redo
             </button>
-            <button className="btn primary" onClick={() => setTool('equip')}>
+            <button className="btn primary" onClick={() => setTool("equip")}>
               Done
             </button>
           </div>
@@ -758,7 +1140,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                   key={sh.id}
                   role="radio"
                   aria-checked={shape === sh.id}
-                  className={shape === sh.id ? 'btn active' : 'btn'}
+                  className={shape === sh.id ? "btn active" : "btn"}
                   onClick={() => setShape(sh.id)}
                   title={`${sh.label} (${sh.key})`}
                 >
@@ -773,7 +1155,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                   key={b.id}
                   role="radio"
                   aria-checked={value === b.id}
-                  className={value === b.id ? 'btn active' : 'btn'}
+                  className={value === b.id ? "btn active" : "btn"}
                   onClick={() => setValue(b.id)}
                   title={`${b.label} (${b.key})`}
                 >
@@ -786,7 +1168,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
               <button
                 role="radio"
                 aria-checked={step === SUB}
-                className={step === SUB ? 'btn active' : 'btn'}
+                className={step === SUB ? "btn active" : "btn"}
                 onClick={() => setStep(SUB)}
               >
                 1 m
@@ -794,7 +1176,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
               <button
                 role="radio"
                 aria-checked={step === 1}
-                className={step === 1 ? 'btn active' : 'btn'}
+                className={step === 1 ? "btn active" : "btn"}
                 onClick={() => setStep(1)}
               >
                 0.5 m
@@ -804,7 +1186,11 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
             <button className="btn" onClick={fillAll}>
               Fill all
             </button>
-            <button className="btn" onClick={clearAll} disabled={countDead(floor) === 0}>
+            <button
+              className="btn"
+              onClick={clearAll}
+              disabled={countDead(floor) === 0}
+            >
               Clear
             </button>
           </div>
@@ -815,54 +1201,78 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
             <span className="label">Add</span>
             <div className="palette" aria-label="Equipment">
               {EQUIPMENT_TYPES.filter((t) => !t.permanent).map((t) => {
-                const n = countOf(t.id)
+                const n = countOf(t.id);
                 return (
                   <button
                     key={t.id}
-                    className={armed === t.id ? 'chip active' : 'chip'}
-                    disabled={n >= t.count}
+                    className={armed === t.id ? "chip active" : "chip"}
+                    disabled={n >= owned(t.id)}
                     onClick={() => armType(t.id)}
                     title={`Place ${t.name}`}
                   >
                     <i className="chip-dot" style={{ background: t.color }} />
                     <span className="chip-name">{t.name}</span>
                     <small>
-                      {n}/{t.count} · {t.length} × {t.depth} m
+                      {n}/{owned(t.id)} · {t.length} × {t.depth} m
                     </small>
                   </button>
-                )
+                );
               })}
             </div>
             <span className="spacer" />
-            <button className="btn" onClick={undo} disabled={!past.length} title="Undo (⌘Z)">
+            <button
+              className="btn"
+              onClick={undo}
+              disabled={!past.length}
+              title="Undo (⌘Z)"
+            >
               Undo
             </button>
-            <button className="btn" onClick={redo} disabled={!future.length} title="Redo (⇧⌘Z)">
+            <button
+              className="btn"
+              onClick={redo}
+              disabled={!future.length}
+              title="Redo (⇧⌘Z)"
+            >
               Redo
             </button>
           </div>
 
-          <div className={`row selection${selected || armed ? ' active' : ''}`}>
+          <div
+            className={`row selection${selected || armed ? " active" : ""}`}
+            hidden={!selected && !armed}
+          >
             {selected || armed ? (
               <>
                 <span className="sel-name">
-                  {selected ? typeOf(selected.type).name : `Placing ${typeOf(armed!).name}`}
+                  {selected
+                    ? typeOf(selected.type).name
+                    : `Placing ${typeOf(armed!).name}`}
                 </span>
-                <button className="btn" onClick={rotateSelected} title="Rotate 90° (R)">
+                <button
+                  className="btn"
+                  onClick={rotateSelected}
+                  title={
+                    (selected ?? (armed ? { type: armed } : null)) &&
+                    turnsInQuarters((selected ?? { type: armed! }).type)
+                      ? "Turn a quarter clockwise (R): machines face the way the arrow points, a box with a one-side safe area faces its safe side"
+                      : "Rotate 90° (R)"
+                  }
+                >
                   Rotate<kbd>R</kbd>
                 </button>
-                {canUpright && (
+                {canSafeMode && (
                   <button
-                    className={isUpright ? 'btn active' : 'btn'}
-                    onClick={toggleUpright}
-                    aria-pressed={isUpright}
-                    title="Stand on end (U)"
+                    className={selected?.safeMode ? "btn active" : "btn"}
+                    onClick={cycleSafeMode}
+                    title="Safe area: all around, one side or one direction (A)"
                   >
-                    Upright<kbd>U</kbd>
+                    Safe: {SAFE_LABEL[safeNow]}
+                    <kbd>A</kbd>
                   </button>
                 )}
                 <button
-                  className={isStoredMark ? 'btn active' : 'btn'}
+                  className={isStoredMark ? "btn active" : "btn"}
                   onClick={toggleStored}
                   aria-pressed={isStoredMark}
                   title="Mark as stored: not in use, drawn dulled (S)"
@@ -872,14 +1282,19 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                 {sizeTarget && (
                   <div className="group size" aria-label="Workout space size">
                     {SPACE_PRESETS.map((pr) => (
-                      <button key={pr.label} className="btn" onClick={() => setSize(pr.w, pr.h)} title={`${pr.w} × ${pr.h} m`}>
+                      <button
+                        key={pr.label}
+                        className="btn"
+                        onClick={() => setSize(pr.w, pr.h)}
+                        title={`${pr.w} × ${pr.h} m`}
+                      >
                         {pr.label}
                       </button>
                     ))}
                     <label className="dim">
                       W
                       <input
-                        key={`w-${selected?.id ?? 'new'}-${curSize.w}`}
+                        key={`w-${selected?.id ?? "new"}-${curSize.w}`}
                         className="field num"
                         type="number"
                         inputMode="decimal"
@@ -887,8 +1302,12 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                         max={WIDTH_M}
                         step={0.1}
                         defaultValue={curSize.w}
-                        onBlur={(e) => setSize(e.target.valueAsNumber, curSize.h)}
-                        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                        onBlur={(e) =>
+                          setSize(e.target.valueAsNumber, curSize.h)
+                        }
+                        onKeyDown={(e) =>
+                          e.key === "Enter" && e.currentTarget.blur()
+                        }
                         aria-label="Width in metres"
                       />
                     </label>
@@ -896,7 +1315,7 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                     <label className="dim">
                       H
                       <input
-                        key={`h-${selected?.id ?? 'new'}-${curSize.h}`}
+                        key={`h-${selected?.id ?? "new"}-${curSize.h}`}
                         className="field num"
                         type="number"
                         inputMode="decimal"
@@ -904,20 +1323,39 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                         max={HEIGHT_M}
                         step={0.1}
                         defaultValue={curSize.h}
-                        onBlur={(e) => setSize(curSize.w, e.target.valueAsNumber)}
-                        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                        onBlur={(e) =>
+                          setSize(curSize.w, e.target.valueAsNumber)
+                        }
+                        onKeyDown={(e) =>
+                          e.key === "Enter" && e.currentTarget.blur()
+                        }
                         aria-label="Height in metres"
                       />
                     </label>
                     m
                   </div>
                 )}
+                {canCopy && (
+                  <button
+                    className="btn"
+                    onClick={duplicateSelected}
+                    title="Duplicate (D)"
+                  >
+                    Duplicate<kbd>D</kbd>
+                  </button>
+                )}
                 {selected && (
                   <button
                     className="btn"
                     onClick={removeSelected}
-                    disabled={isPermanent(selected.type)}
-                    title={isPermanent(selected.type) ? 'This equipment is permanent and always stays on the plan' : 'Remove selected (⌫)'}
+                    disabled={atHome}
+                    title={
+                      isPermanent(selected.type)
+                        ? atHome
+                          ? "Already in its stored place"
+                          : "Put back in its stored place (⌫)"
+                        : "Remove selected (⌫)"
+                    }
                   >
                     Remove<kbd>⌫</kbd>
                   </button>
@@ -925,43 +1363,63 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
                 <button
                   className="btn ghost"
                   onClick={() => {
-                    setSelectedId(null)
-                    setArmed(null)
+                    setSelectedId(null);
+                    setArmed(null);
                   }}
                 >
                   Done
                 </button>
               </>
-            ) : (
-              <span className="muted">Tap a piece of equipment to select it, drag to move it.</span>
-            )}
+            ) : null}
           </div>
 
           <div className="row">
             <span className="label">In use</span>
             {RIG_KINDS.map(({ kind, label }) => {
-              const idx = rackPartsOfKind(kind)
-              const on = idx.filter((i) => floor.active.rig.includes(i)).length
+              const idx = rackPartsOfKind(kind);
+              const on = idx.filter((i) => floor.active.rig.includes(i)).length;
               return (
                 <button
                   key={kind}
-                  className={on === idx.length ? 'btn active' : on > 0 ? 'btn partial' : 'btn'}
+                  className={
+                    on === idx.length
+                      ? "btn active"
+                      : on > 0
+                        ? "btn partial"
+                        : "btn"
+                  }
                   onClick={() => toggleRigKind(kind)}
                   aria-pressed={on === idx.length}
                   title={`${label} in use (${on}/${idx.length}). Click to switch all, or click a single station on the plan.`}
                 >
                   {label} {on}/{idx.length}
                 </button>
-              )
+              );
             })}
             <button
-              className={floor.active.wallBalls ? 'btn active' : 'btn'}
+              className={
+                floor.active.wallBalls.length === WALL_BALL_TARGETS.length
+                  ? "btn active"
+                  : floor.active.wallBalls.length > 0
+                    ? "btn partial"
+                    : "btn"
+              }
               onClick={toggleWallBalls}
-              aria-pressed={floor.active.wallBalls}
-              title="Wall balls in use: claims the throwing space in front of the targets"
+              aria-pressed={
+                floor.active.wallBalls.length === WALL_BALL_TARGETS.length
+              }
+              title={`Wall balls in use (${floor.active.wallBalls.length}/${WALL_BALL_TARGETS.length}): claims the throwing space in front of the targets. Click to switch all, or click a single target on the plan.`}
             >
-              Wall balls
+              Wall balls {floor.active.wallBalls.length}/
+              {WALL_BALL_TARGETS.length}
             </button>
+            <span className="spacer" />
+            <span
+              className="allocation"
+              title={`Machines and gear in use: ${alloc.gear} · workout spaces: ${alloc.spaces} · rack stations: ${alloc.rack} · wall ball targets: ${alloc.balls}`}
+            >
+              Spots <b>{alloc.total}</b>
+            </span>
           </div>
         </section>
       )}
@@ -979,16 +1437,19 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
         </div>
         <div
           ref={gridRef}
-          className={`grid${step === 1 ? ' fine' : ''}${tool === 'equip' ? ' equip' : ''}${tool === 'draw' || armed || selectedId ? ' touch-edit' : ''}`}
-          style={{ gridTemplateColumns: `repeat(${COLS}, 1fr)`, aspectRatio: `${WIDTH_M} / ${HEIGHT_M}` }}
+          className={`grid${step === 1 ? " fine" : ""}${tool === "equip" ? " equip" : ""}${tool === "draw" || armed || selectedId ? " touch-edit" : ""}`}
+          style={{
+            gridTemplateColumns: `repeat(${COLS}, 1fr)`,
+            aspectRatio: `${WIDTH_M} / ${HEIGHT_M}`,
+          }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endStroke}
           onPointerCancel={endStroke}
           onPointerLeave={() => {
-            setHover(null)
-            setHoverM(null)
-            if (!drag.current) setDragGuides([])
+            setHover(null);
+            setHoverM(null);
+            if (!drag.current) setDragGuides([]);
           }}
         >
           {cellEls}
@@ -998,9 +1459,14 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
               <div
                 key={z.id}
                 className="zone"
-                style={{ top: pct(z.y0, HEIGHT_M), height: pct(z.y1 - z.y0, HEIGHT_M) }}
+                style={{
+                  top: pct(z.y0, HEIGHT_M),
+                  height: pct(z.y1 - z.y0, HEIGHT_M),
+                }}
               >
-                <span style={{ top: pct(z.labelY - z.y0, z.y1 - z.y0) }}>{z.label}</span>
+                <span style={{ top: pct(z.labelY - z.y0, z.y1 - z.y0) }}>
+                  {z.label}
+                </span>
               </div>
             ))}
 
@@ -1008,90 +1474,145 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
             {shown.items
               .filter((i) => !i.stored && !typeOf(i.type).marker)
               .map((i) => (
-                <div key={`safe-${i.id}`} className="safe" style={rectStyle(safeRect(i))} />
+                <div
+                  key={`safe-${i.id}`}
+                  className="safe"
+                  style={rectStyle(safeRect(i))}
+                />
               ))}
-            {rackSafeRects(undefined, shown.active.rig).map((r, i) => (
-              <div key={`rig-${i}`} className="safe" style={rectStyle(r)} />
+            {rackSafeRects(undefined, shown.active.rig, shown.active.reach).map(
+              (r, i) => (
+                <div key={`rig-${i}`} className="safe" style={rectStyle(r)} />
+              ),
+            )}
+            {wallBallSafeRects(shown.active.wallBalls).map((r, i) => (
+              <div key={`wb-${i}`} className="safe" style={rectStyle(r)} />
             ))}
-            {shown.active.wallBalls &&
-              wallBallSafeRects().map((r, i) => <div key={`wb-${i}`} className="safe" style={rectStyle(r)} />)}
 
             {FIXED_EQUIPMENT.map((eq) => (
               <div
                 key={eq.id}
                 className="fixed-eq"
                 title={`${eq.maker} ${eq.name} · ${eq.width} × ${eq.height} m`}
-                style={rectStyle({ x: eq.x, y: eq.y, w: eq.width, h: eq.height })}
+                style={rectStyle({
+                  x: eq.x,
+                  y: eq.y,
+                  w: eq.width,
+                  h: eq.height,
+                })}
               >
                 {eq.parts.map((part, i) => (
                   <span
                     key={i}
-                    className={`station ${part.kind}${shown.active.rig.includes(i) ? ' on' : ''}`}
-                    title={STATION_KINDS[part.kind].label}
+                    className={`station ${part.kind}${shown.active.rig.includes(i) ? " on" : ""}`}
+                    title={
+                      part.kind === "pullup"
+                        ? `${STATION_KINDS[part.kind].label} · click again for a longer safe area (TRX)`
+                        : STATION_KINDS[part.kind].label
+                    }
                     style={{ flex: `0 0 ${(part.width / eq.width) * 100}%` }}
                   >
                     {part.width >= 0.5 ? STATION_KINDS[part.kind].short : null}
+                    {part.kind === "pullup" &&
+                      shown.active.rig.includes(i) &&
+                      (shown.active.reach?.[i] ?? 0) > PULLUP_REACHES[0] && (
+                        <small className="reach">
+                          {shown.active.reach![i]} m
+                        </small>
+                      )}
                   </span>
                 ))}
               </div>
             ))}
 
             {byLayer(shown.items).map((it) => {
-              const t = typeOf(it.type)
-              const base = restingOn(it, shown.items)
-              const stack = t.stackMax ? stackSize(it, shown.items) : 1
-              const cls = `item${it.id === selectedId ? ' selected' : ''}${conflictIds.has(it.id) ? ' conflict' : ''}${warnIds.has(it.id) ? ' warn' : ''}${it.stored ? ' stored' : ''}${it.upright || footprint(it).w < 0.5 ? ' upright' : ''}${t.marker ? ' marker' : ''}`
+              const t = typeOf(it.type);
+              const base = restingOn(it, shown.items);
+              const stack = t.stackMax ? stackSize(it, shown.items) : 1;
+              const cls = `item${it.id === selectedId ? " selected" : ""}${conflictIds.has(it.id) ? " conflict" : ""}${warnIds.has(it.id) ? " warn" : ""}${it.stored ? " stored" : ""}${it.upright || footprint(it).w < 0.5 ? " upright" : ""}${t.marker ? " marker" : ""}`;
               return (
                 <div
                   key={it.id}
                   className={cls}
-                  title={`${t.name} · ${t.length} × ${t.depth} m${it.upright ? ' · upright' : ''}${it.stored ? ' · stored' : ''}${base ? ` · standing on ${typeOf(base.type).name}` : ''}${conflictIds.has(it.id) ? ' · conflict' : ''}`}
-                  style={{ ...rectStyle(footprint(it)), '--c': t.color } as React.CSSProperties}
+                  title={`${t.name} · ${t.length} × ${t.depth} m${it.upright ? " · upright" : ""}${it.stored ? " · stored" : ""}${base ? ` · standing on ${typeOf(base.type).name}` : ""}${conflictIds.has(it.id) ? " · conflict" : ""}`}
+                  style={
+                    {
+                      ...rectStyle(footprint(it)),
+                      "--c": t.color,
+                    } as React.CSSProperties
+                  }
                 >
+                  {t.directional && !it.stored && (
+                    <i className={`facing ${facingOf(it)}`} aria-hidden />
+                  )}
                   <span>
                     {t.short}
-                    {t.resizable && ` ${+footprint(it).w.toFixed(2)}×${+footprint(it).h.toFixed(2)}`}
+                    {t.resizable &&
+                      ` ${+footprint(it).w.toFixed(2)}×${+footprint(it).h.toFixed(2)}`}
                     {stack > 1 && ` ${stack}x`}
-                    {base && ' ↑'}
+                    {base && " ↑"}
                   </span>
                 </div>
-              )
+              );
             })}
 
             {(() => {
-              const sel = shown.items.find((i) => i.id === selectedId && typeOf(i.type).resizable)
+              const sel = shown.items.find(
+                (i) => i.id === selectedId && typeOf(i.type).resizable,
+              );
               return sel ? (
                 <div className="handles" style={rectStyle(footprint(sel))}>
-                  <i className="handle e" onPointerDown={(e) => startResize(e, sel, 'e')} title="Drag to change the width" />
-                  <i className="handle s" onPointerDown={(e) => startResize(e, sel, 's')} title="Drag to change the height" />
-                  <i className="handle se" onPointerDown={(e) => startResize(e, sel, 'se')} title="Drag to resize" />
+                  <i
+                    className="handle e"
+                    onPointerDown={(e) => startResize(e, sel, "e")}
+                    title="Drag to change the width"
+                  />
+                  <i
+                    className="handle s"
+                    onPointerDown={(e) => startResize(e, sel, "s")}
+                    title="Drag to change the height"
+                  />
+                  <i
+                    className="handle se"
+                    onPointerDown={(e) => startResize(e, sel, "se")}
+                    title="Drag to resize"
+                  />
                 </div>
-              ) : null
+              ) : null;
             })()}
 
-            {WALL_BALL_TARGETS.map((t) => (
+            {WALL_BALL_TARGETS.map((t, i) => (
               <div
                 key={t.id}
-                className="overhead"
+                className={`overhead${shown.active.wallBalls.includes(i) ? " on" : ""}`}
                 title={`${t.name} · overhead, space below stays usable`}
                 style={rectStyle({ x: t.x, y: t.y, w: t.width, h: t.height })}
               />
             ))}
 
             {guides.map((g, i) => (
-              <div key={`guide-${i}`} className={`guide ${g.kind}`} style={guideStyle(g)} />
+              <div
+                key={`guide-${i}`}
+                className={`guide ${g.kind}`}
+                style={guideStyle(g)}
+              />
             ))}
 
             {ghost && (
               <div
-                className={`item ghost${ghostConflict ? ' conflict' : ''}`}
-                style={{ ...rectStyle(footprint(ghost)), '--c': typeOf(ghost.type).color } as React.CSSProperties}
+                className={`item ghost${ghostConflict ? " conflict" : ""}`}
+                style={
+                  {
+                    ...rectStyle(footprint(ghost)),
+                    "--c": typeOf(ghost.type).color,
+                  } as React.CSSProperties
+                }
               >
                 <span>{typeOf(ghost.type).short}</span>
               </div>
             )}
           </div>
-          {tool === 'draw' && hover && (
+          {tool === "draw" && hover && (
             <div
               className="hover-box"
               style={{
@@ -1103,14 +1624,23 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
             />
           )}
         </div>
-        <div className="notes" style={{ '--rows': fields.length } as React.CSSProperties}>
+        <div
+          className="notes"
+          style={{ "--rows": fields.length } as React.CSSProperties}
+        >
           {fields.map((f) => (
             <label key={f.key} className="note">
               <span>{f.label}</span>
               <textarea
-                value={notes[f.key] ?? ''}
-                onChange={(e) => setNotes((n) => ({ ...n, [f.key]: e.target.value }))}
-                placeholder={fields.length === 1 ? 'Workout…' : `Workout for ${f.label.toLowerCase()}…`}
+                value={notes[f.key] ?? ""}
+                onChange={(e) =>
+                  setNotes((n) => ({ ...n, [f.key]: e.target.value }))
+                }
+                placeholder={
+                  fields.length === 1
+                    ? "Workout…"
+                    : `Workout for ${f.label.toLowerCase()}…`
+                }
                 spellCheck={false}
               />
             </label>
@@ -1118,74 +1648,13 @@ export function FloorEditor({ loadId }: { loadId?: string }) {
         </div>
       </div>
 
-      <section className="legend" aria-label="Fixed equipment">
-        {FIXED_EQUIPMENT.map((eq) => {
-          const n = countStations(eq)
-          return (
-            <div key={eq.id} className="legend-row">
-              <b>
-                {eq.maker} {eq.name}
-              </b>
-              <span>
-                {eq.width} × {eq.height} m · fixed
-              </span>
-              {(Object.keys(n) as (keyof typeof n)[]).map((k) => (
-                <span key={k} className="legend-item">
-                  <i className={`station-dot ${k}`} /> {n[k]} {STATION_KINDS[k].label.toLowerCase()}
-                </span>
-              ))}
-            </div>
-          )
-        })}
-        <div className="legend-row">
-          <b>Wall ball targets</b>
-          <span>overhead · space below stays usable</span>
-          <span className="legend-item">
-            <i className="overhead-dot" /> {WALL_BALL_TARGETS.map((t) => t.id.replace('wall-ball-', '')).join(', ')}
-          </span>
-        </div>
-      </section>
-
       <footer className="status">
-        <span>
-          {WIDTH_M} × {HEIGHT_M} m
-        </span>
-        <span>
-          Usable <b>{fmt(totalM2 - deadM2)}</b> m² · Dead <b>{fmt(deadM2)}</b> m² · Turf <b>{fmt(turfM2)}</b> m²
-        </span>
-        <span>
-          Equipment{' '}
-          <b>
-            {equipmentCount}/{TOTAL_EQUIPMENT}
-          </b>{' '}
-          placed ({storedCount} stored)
-          {spaceCount > 0 && ` · ${spaceCount} workout spaces`}
-          {conflictIds.size > 0 && (
-            <>
-              {' · '}
-              <b className="warn">{conflictIds.size} in conflict</b>
-            </>
-          )}
-          {warnIds.size > 0 && (
-            <>
-              {' · '}
-              <b className="tight">{warnIds.size} inside a safe area</b>
-            </>
-          )}
-        </span>
-        <span>
-          {tool === 'equip' && hoverM
-            ? `x ${fmt(Math.round(hoverM.x * 10) / 10)} m, y ${fmt(Math.round(hoverM.y * 10) / 10)} m`
-            : tool === 'draw' && hover
-              ? `${rowLabel(Math.floor((hover.row * hoverStep) / SUB))}${Math.floor((hover.col * hoverStep) / SUB) + 1} · x ${fmt((hover.col * hoverStep) / SUB)} m, y ${fmt((hover.row * hoverStep) / SUB)} m`
-              : 'Hover the floor'}
-        </span>
         <span className="hint">
-          {tool === 'draw'
-            ? 'Hold ⌥ to invert while drawing'
-            : 'Pick a type, click to place · drag to move · R rotates · U upright · S stored · ⌫ removes · Esc deselects · hold ⌥ to skip snapping'}
+          {tool === "draw"
+            ? "Hold ⌥ to invert while drawing"
+            : "Pick a type, click to place · drag to move · R rotates · S stores · ⌫ removes · Esc deselects · hold ⌥ to skip snapping"}
         </span>
       </footer>
     </div>
-  )
+  );
 }

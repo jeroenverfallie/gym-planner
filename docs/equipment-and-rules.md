@@ -4,8 +4,11 @@ Read this **before generating or editing any workout**. The gym runs **group ses
 16 × 12 m room, **max 24 people**. A workout must never use more equipment than exists, and must say which
 equipment it uses so everything else can be put away (stored).
 
-Source of truth for placeable equipment counts and sizes: [`src/lib/equipment.ts`](../src/lib/equipment.ts).
-If a count here and the code disagree, fix the one that's wrong and tell the user.
+Source of truth for equipment sizes: [`src/lib/equipment.ts`](../src/lib/equipment.ts). **The counts below are the
+defaults.** The user can change what the gym owns on the **Settings** page (`/settings`, saved in the browser,
+`src/lib/inventory.ts`): kettlebells and dumbbells by weight, soft mats, plyo boxes, benches, sleds and every cardio
+machine. The planner, the floor plan (permanent equipment is added stored or dropped to match) and the generator
+all follow it. If a count here and the code disagree, fix the one that's wrong and tell the user.
 
 ## The room
 
@@ -32,7 +35,7 @@ If a count here and the code disagree, fix the one that's wrong and tell the use
 and wall ball targets) is **always on the floor plan** and can't be deleted: it has to be somewhere. When a
 workout doesn't use it, it stays on the plan **stored** (the dulled items along the walls); a workout marks what it
 uses as in use. Only **benches, soft mats and workout spaces** are added and removed per workout. In the floor
-editor the permanent items have no "place" buttons and can't be removed; if a saved layout is missing one, it is
+editor the permanent items have no "place" buttons and can't be deleted: Remove (⌫) puts the selected one back in its stored place; if a saved layout is missing one, it is
 put back automatically.
 
 "Max at once" is the most people who can use that item at the same time. Never plan more than this per workout block.
@@ -110,10 +113,18 @@ stations on.
 
 ## Safe areas (space a unit needs while in use)
 
+A **stored RowErg stands upright** (compact, may rest on a SkiErg base); one **in use lies flat**. This follows the
+stored switch, there is no separate upright setting.
+
 Estimates for an average person. Safe areas **may overlap each other** (shared aisles); what may **not**
 happen is another unit (or its footprint) standing inside one. Stored equipment is not in use, so it claims no
 safe area. The floor editor draws these and flags anything inside one in amber. Source: `safe` in
 `src/lib/equipment.ts` (and the rack/wall-ball rectangles beneath it).
+
+**Plyo boxes are situational:** a box in use claims space all around (default), on **one long side** only, or on
+**one direction** (both long sides: jump from one, land on the other). Toggle with the *Safe* button (A) in the
+planner. For the single side, rotate the box (R turns it through all four directions: the safe side is the long side
+it faces). Saved per box (`safeMode`, `flip`).
 
 | Unit | Beyond the short ends | Beyond the long sides | Notes |
 |---|---|---|---|
@@ -132,8 +143,10 @@ safe area. The floor editor draws these and flags anything inside one in amber. 
 | Wall ball target | | | 1.8 m wide × 2.5 m out from the wall. |
 
 Each rack station (every barbell bay, pull station and pull-up bay) is marked **in use** on its own in the floor
-editor, by clicking it on the plan or with the Barbells / Pulls / Pull-ups buttons. The wall ball targets are
-switched together ("Wall balls in use"). Only stations in use claim their safe area. Always aim for the best use
+editor, by clicking it on the plan or with the Barbells / Pulls / Pull-ups buttons. A pull-up bay in use claims 1.0 m in front of it; with a
+**TRX** it needs more, so clicking a bay that is already in use steps its safe area to 1.5 m, then 2.0 m, then off
+(`PULLUP_REACHES`; the length shows on the bay). The wall ball targets are
+switched the same way: click a target on the plan, or the Wall balls button for all four. Only stations and targets in use claim their safe area. Always aim for the best use
 of space and flow: put stations people move between close together, keep walkways clear, and let neighbouring safe
 areas overlap where they can.
 
@@ -190,7 +203,7 @@ has two, **Strength** and **Cardio**.
     without a time isn't finished. Put the times in the workout text itself (first line of a field), not only in
     your reply. Usual shapes (use them unless told otherwise):
     - **Always state the rest explicitly.** Each interval is written **work + rest**, e.g. `5 x 1:30 · 0:50 WORK / 0:40
-      REST`, and the move between zones/stations is written **MOVE + REST** (`1:30 MOVE + REST`). Rest guide: strength
+      REST`, and the swap between zones/stations is written **SWAP + REST** (`1:30 SWAP + REST`). Rest guide: strength
       sets (6–12 reps) about **0:40–0:45 rest after about 0:50 work**; cardio intervals about **0:20–0:30 rest**;
       partners alternating get an equal rest (`1:30 WORK / 1:30 REST EACH`).
     - **Time and volume must agree.** Never give a station a long time block with a task that takes a fraction of it

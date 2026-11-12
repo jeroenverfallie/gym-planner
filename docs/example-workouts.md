@@ -11,7 +11,7 @@ style** when generating workouts. See [equipment-and-rules.md](equipment-and-rul
 - One block per zone: **RIG**, **TURF**, **MAT**, each with its movements, one per line.
 - Terse, upper-case movement names. Reps only where they matter ("8-12 barbell squat"), no loads.
 - **Timings are always included** (total, per zone, work and move; see rule 12 in the rules doc). They sit in the first
-  lines of a field, e.g. `16:30 · 7:30 + 7:30 · 1:30 MOVE + REST`. No total line: the time per section is enough.
+  lines of a field, e.g. `16:30 · 7:30 + 7:30 · 1:30 SWAP + REST`. No total line: the time per section is enough.
 - `INTO` separates **two stations** in a zone. Half the zone (e.g. **4 of 8 people**) does the first station while
   the other half does the second; then they **switch**. A station can hold more than one movement, one per line.
   So a zone with an `INTO` needs equipment for only **half** its people at each station.
@@ -24,18 +24,18 @@ style** when generating workouts. See [equipment-and-rules.md](equipment-and-rul
 ## Lift – Lower
 
 ```
-RIG   16:30 · 5 x 3:00 + 1:30 MOVE + REST
+RIG   16:30 · 5 x 3:00 + 1:30 SWAP + REST
       5 x 3:00 · PARTNERS ALTERNATE
       1:30 WORK / 1:30 REST EACH
       8-12 BARBELL SQUAT
       10 DROP SQUATS
-TURF  16:30 · 7:30 + 7:30 · 1:30 MOVE + REST
+TURF  16:30 · 7:30 + 7:30 · 1:30 SWAP + REST
       5 x 1:30 · 0:50 WORK / 0:40 REST
       BENCH HIP THRUST L|R
       INTO
       5 x 1:30 · 0:50 WORK / 0:40 REST
       REVERSE LUNGE TO HIGH KNEE L|R
-MAT   16:30 · 7:30 + 7:30 · 1:30 MOVE + REST
+MAT   16:30 · 7:30 + 7:30 · 1:30 SWAP + REST
       5 x 1:30 · 0:50 WORK / 0:40 REST
       BROAD JUMPS
       FRONT LUNGES
@@ -110,19 +110,19 @@ Built from the rules. **24 people, three zones of 8 with `INTO`: 4 do the streng
 station, then they switch, so everyone spends half their time on cardio (the Lift & Rush rule).** Upper-body focus.
 
 ```
-RIG   16:30 · 7:30 + 7:30 · 1:30 MOVE + REST
+RIG   16:30 · 7:30 + 7:30 · 1:30 SWAP + REST
       5 x 1:30 · 0:50 WORK / 0:40 REST
       6-10 PULL-UPS (OR TRX ROWS)
       INTO
       5 x 1:30 · 1:10 WORK / 0:20 REST
       SKIERG 250 M
-TURF  16:30 · 7:30 + 7:30 · 1:30 MOVE + REST
+TURF  16:30 · 7:30 + 7:30 · 1:30 SWAP + REST
       5 x 1:30 · 0:50 WORK / 0:40 REST
       DB BENCH PRESS 8-12
       INTO
       5 x 1:30 · 1:10 WORK / 0:20 REST
       ROW 250 M
-MAT   16:30 · 7:30 + 7:30 · 1:30 MOVE + REST
+MAT   16:30 · 7:30 + 7:30 · 1:30 SWAP + REST
       5 x 1:30 · 0:50 WORK / 0:40 REST
       DB SHOULDER PRESS 8-12
       INTO

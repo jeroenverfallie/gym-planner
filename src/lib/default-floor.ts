@@ -1,4 +1,6 @@
-import { isPermanent, type Placed } from '#/lib/equipment'
+import { EQUIPMENT_TYPES, type Placed, isPermanent, typeOf } from '#/lib/equipment'
+import { type Inventory, ownedOf, readInventory } from '#/lib/inventory'
+import { hasConflict } from '#/lib/placement'
 import { COLS, SUB, type Floor, createFloor, paint, rectPoints } from '#/lib/floor'
 
 /**
@@ -67,14 +69,53 @@ const DEFAULT_ITEMS: Placed[] = [
   { id: 'plyo-8', type: 'plyo', x: 0.01, y: 5.14, rotated: true, stored: true },
 ]
 
+/** First free spot (0.5 m steps) for a new stored item: open floor, nothing else in the way. */
+function freeSpot(item: Placed, items: Placed[]): { x: number; y: number } {
+  const floor = { ...defaultFloor(), items }
+  for (let y = 0; y <= 11.5; y += 0.5)
+    for (let x = 0; x <= 15.5; x += 0.5) {
+      const probe = { ...item, x, y }
+      if (!hasConflict(floor, probe, items)) return { x, y }
+    }
+  return { x: 0, y: 0 }
+}
+
+/** Where a permanent item is kept when not in use: its default stored spot, or the first free one for extra units. */
+export function storedHome(item: Placed, items: Placed[]): Placed {
+  const d = DEFAULT_ITEMS.find((i) => i.id === item.id)
+  if (d) return { ...d }
+  const stored: Placed = { id: item.id, type: item.type, x: 0, y: 0, rotated: false, stored: true, ...(typeOf(item.type).upright ? { upright: true } : {}) }
+  return { ...stored, ...freeSpot(stored, items.filter((i) => i.id !== item.id)) }
+}
+
 /**
- * Permanent equipment must always be on the plan. If a saved layout is missing any (an older save), put the
- * default copy back, stored, where the default has it.
+ * Permanent equipment must always be on the plan, and exactly as many as the gym owns (Settings). Missing ones
+ * come back stored (the default copy where the default has it, otherwise the first free spot); surplus ones are
+ * dropped, stored ones first.
  */
-export function restoreMissing(items: Placed[]): Placed[] {
-  const have = new Set(items.map((i) => i.id))
-  const missing = DEFAULT_ITEMS.filter((d) => isPermanent(d.type) && !have.has(d.id)).map((d) => ({ ...d }))
-  return missing.length ? [...items, ...missing] : items
+export function restoreMissing(items: Placed[], inv: Inventory = readInventory()): Placed[] {
+  let out = items
+  for (const t of EQUIPMENT_TYPES) {
+    if (!isPermanent(t.id)) continue
+    const want = ownedOf(inv, t.id)
+    const have = out.filter((i) => i.type === t.id)
+    if (have.length > want) {
+      const order = [...have.filter((i) => i.stored).reverse(), ...have.filter((i) => !i.stored).reverse()]
+      const drop = new Set(order.slice(0, have.length - want).map((i) => i.id))
+      out = out.filter((i) => !drop.has(i.id))
+    } else if (have.length < want) {
+      const ids = new Set(out.map((i) => i.id))
+      const add: Placed[] = DEFAULT_ITEMS.filter((d) => d.type === t.id && !ids.has(d.id)).slice(0, want - have.length).map((d) => ({ ...d }))
+      out = [...out, ...add]
+      for (let n = have.length + add.length; n < want; n++) {
+        let k = n + 1
+        while (out.some((i) => i.id === `${t.id}-${k}`)) k++
+        const base: Placed = { id: `${t.id}-${k}`, type: t.id, x: 0, y: 0, rotated: false, stored: true }
+        out = [...out, { ...base, ...freeSpot(base, out) }]
+      }
+    }
+  }
+  return out
 }
 
 export function defaultFloor(): Floor {

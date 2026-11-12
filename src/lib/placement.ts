@@ -122,9 +122,9 @@ export function hasConflict(floor: Floor, item: Placed, others: Placed[]): boole
  * rig when it is in use, or of a wall ball target in use; and in-use units whose own safe area touches
  * the rack's solid parts. Stored units claim no safe area, but still count as obstacles.
  */
-export function safetyWarnings(items: Placed[], active: { rig: number[]; wallBalls: boolean }): Set<string> {
+export function safetyWarnings(items: Placed[], active: { rig: number[]; wallBalls: number[]; reach?: Record<number, number> }): Set<string> {
   const out = new Set<string>()
-  const zones = [...rackSafeRects(BLK_BOX_RACK, active.rig), ...(active.wallBalls ? wallBallSafeRects() : [])]
+  const zones = [...rackSafeRects(BLK_BOX_RACK, active.rig, active.reach), ...wallBallSafeRects(active.wallBalls)]
   for (const b of items) if (zones.some((z) => overlaps(z, footprint(b)))) out.add(b.id)
 
   const solid: Rect[] = []

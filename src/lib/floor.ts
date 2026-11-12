@@ -1,4 +1,4 @@
-import { BLK_BOX_RACK, type Placed, isTypeId } from '#/lib/equipment'
+import { BLK_BOX_RACK, PULLUP_REACHES, type Placed, WALL_BALL_TARGETS, isTypeId, typeOf } from '#/lib/equipment'
 
 /** Floor plan model. Pure functions only — no React in here. */
 
@@ -36,7 +36,8 @@ export type Floor = {
   surface: Surface[] // same shape as cells
   items: Placed[] // movable equipment, positions in metres
   /** Fixed equipment in use, so its safe area is claimed: indexes of the rack parts, and the wall ball targets. */
-  active: { rig: number[]; wallBalls: boolean }
+  /** `rig`: switched-on rack stations; `wallBalls`: switched-on wall ball targets (indices into WALL_BALL_TARGETS). */
+  active: { rig: number[]; wallBalls: number[]; /** Pull-up bay (rack part index) to the depth its safe area claims, when longer than plain pull-ups (TRX). */ reach?: Record<number, number> }
 }
 
 export type Point = { col: number; row: number }
@@ -44,7 +45,7 @@ export type Point = { col: number; row: number }
 export function createFloor(cols = COLS, rows = ROWS): Floor {
   return { cols, rows, cells: Array<Cell>(cols * rows).fill('open'), surface: Array<Surface>(cols * rows).fill('tile'),
     items: [],
-    active: { rig: [], wallBalls: false },
+    active: { rig: [], wallBalls: [] },
   }
 }
 
@@ -118,13 +119,17 @@ export function sameCells(a: Floor, b: Floor) {
     a.surface.every((c, i) => c === b.surface[i]) &&
     a.active.rig.length === b.active.rig.length &&
     a.active.rig.every((v, i) => v === b.active.rig[i]) &&
-    a.active.wallBalls === b.active.wallBalls &&
+    JSON.stringify(a.active.reach ?? {}) === JSON.stringify(b.active.reach ?? {}) &&
+    a.active.wallBalls.length === b.active.wallBalls.length &&
+    a.active.wallBalls.every((v, i) => v === b.active.wallBalls[i]) &&
     a.items.length === b.items.length &&
     a.items.every((it, i) => {
       const o = b.items[i]
       return (
         it.id === o.id && it.type === o.type && it.x === o.x && it.y === o.y && it.rotated === o.rotated && !!it.upright === !!o.upright &&
         !!it.stored === !!o.stored &&
+        !!it.flip === !!o.flip &&
+        it.safeMode === o.safeMode &&
         it.w === o.w &&
         it.h === o.h
       )
@@ -167,7 +172,18 @@ export function deserialize(raw: string | null, fallbackSurface?: Surface[]): Fl
       : savedActive?.rig // older saves: the whole rig was one switch
         ? Array.from({ length: partCount }, (_, i) => i)
         : []
-    const active = { rig, wallBalls: !!savedActive?.wallBalls }
+    const targets = WALL_BALL_TARGETS.length
+    const wallBalls: number[] = Array.isArray(savedActive?.wallBalls)
+      ? [...new Set<number>(savedActive.wallBalls)].filter((i) => Number.isInteger(i) && i >= 0 && i < targets).sort((a, b) => a - b)
+      : savedActive?.wallBalls // older saves: all the targets were one switch
+        ? Array.from({ length: targets }, (_, i) => i)
+        : []
+    const reach: Record<number, number> = {}
+    for (const [k, v] of Object.entries(savedActive?.reach ?? {})) {
+      const i = Number(k)
+      if (rig.includes(i) && BLK_BOX_RACK.parts[i]?.kind === 'pullup' && PULLUP_REACHES.includes(v as number) && v !== PULLUP_REACHES[0]) reach[i] = v as number
+    }
+    const active = { rig, wallBalls, reach }
     if (typeof cells !== 'string' || cells.length !== cols * rows) return null
     // '2' was the short-lived storage zone type; it reads back as plain dead space.
     const dead = (c: string): Cell => (c === '1' || c === '2' ? 'dead' : 'open')
@@ -178,6 +194,7 @@ export function deserialize(raw: string | null, fallbackSurface?: Surface[]): Fl
       Array.isArray(items)
         ? items
             .map((i: Placed): Placed => (LEGACY_SPACES[i?.type as string] ? { ...i, type: 'space' as const, ...LEGACY_SPACES[i.type as string] } : i))
+            .map((i: Placed): Placed => (typeOf(i.type)?.upright ? { ...i, upright: !!i.stored } : i)) // stored RowErgs stand on end, in use ones lie flat
             .filter(
             (i: Placed) =>
               typeof i?.id === 'string' &&

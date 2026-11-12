@@ -106,6 +106,10 @@ export type EquipmentType = {
   resizable?: boolean
   /** A planning marker, not a machine: drawn as an outline and left out of the equipment totals. */
   marker?: boolean
+  /** The machine has a front: the way the person using it faces. Shown as an arrow, turned in 90° steps. */
+  directional?: boolean
+  /** The safe area depends on the exercise: the item can switch between all around, one side and one direction. */
+  situationalSafe?: boolean
   /** Units of this type can stack on each other (same spot) up to this many high. */
   stackMax?: number
   /**
@@ -119,13 +123,13 @@ export type EquipmentType = {
 const SKIERG = { length: 1.27, depth: 0.6 }
 
 export const EQUIPMENT_TYPES: EquipmentType[] = [
-  { id: 'echo-bike', permanent: true, safe: { ends: 0.3, sides: 0.4 }, name: 'Rogue Echo Bike', short: 'Echo', color: '#ff6b57', length: 1.4, depth: 0.75, count: 2 },
-  { id: 'rowerg', permanent: true, safe: { ends: 0.15, sides: 0.3 }, name: 'Concept2 RowErg', short: 'Row', color: '#4f9dff', length: 2.44, depth: 0.61, count: 4, restsOn: 'skierg',
+  { id: 'echo-bike', permanent: true, directional: true, safe: { ends: 0.3, sides: 0.4 }, name: 'Rogue Echo Bike', short: 'Echo', color: '#ff6b57', length: 1.4, depth: 0.75, count: 2 },
+  { id: 'rowerg', permanent: true, directional: true, safe: { ends: 0.15, sides: 0.3 }, name: 'Concept2 RowErg', short: 'Row', color: '#4f9dff', length: 2.44, depth: 0.61, count: 4, restsOn: 'skierg',
     // Upright: as wide as the SkiErg's short side, half its long side in the other dimension.
     upright: { length: SKIERG.length / 2, depth: SKIERG.depth } },
-  { id: 'skierg', permanent: true, safe: { ends: 0.3, sides: 0.4 }, name: 'Concept2 SkiErg', short: 'Ski', color: '#b6e04a', length: SKIERG.length, depth: SKIERG.depth, count: 4 },
-  { id: 'bikeerg', permanent: true, safe: { ends: 0.3, sides: 0.4 }, name: 'Concept2 BikeErg', short: 'Bike', color: '#ff7ac8', length: 1.22, depth: 0.61, count: 4 },
-  { id: 'runner', permanent: true, safe: { ends: 0.6, sides: 0.3 }, name: 'Rogue Curved Runner', short: 'Run', color: '#ececf1', length: 1.63, depth: 0.91, count: 2 },
+  { id: 'skierg', permanent: true, directional: true, safe: { ends: 0.3, sides: 0.4 }, name: 'Concept2 SkiErg', short: 'Ski', color: '#b6e04a', length: SKIERG.length, depth: SKIERG.depth, count: 4 },
+  { id: 'bikeerg', permanent: true, directional: true, safe: { ends: 0.3, sides: 0.4 }, name: 'Concept2 BikeErg', short: 'Bike', color: '#ff7ac8', length: 1.22, depth: 0.61, count: 4 },
+  { id: 'runner', permanent: true, directional: true, safe: { ends: 0.6, sides: 0.3 }, name: 'Rogue Curved Runner', short: 'Run', color: '#ececf1', length: 1.63, depth: 0.91, count: 2 },
   {
     id: 'plyo', permanent: true, safe: { ends: 0.6, sides: 0.6 },
     name: 'Stride Plyo Box',
@@ -136,6 +140,7 @@ export const EQUIPMENT_TYPES: EquipmentType[] = [
     depth: 0.6,
     count: 8,
     stackMax: 3,
+    situationalSafe: true,
   },
   { id: 'sled', permanent: true, safe: { ends: 0, sides: 0.35, lane: 11.5 }, name: 'HYROX Sled', short: 'Sled', color: '#ffd23f', length: 1.02, depth: 0.6, count: 3 },
   // 1.2 × 0.4 m. Safe area: dumbbell work either side.
@@ -170,13 +175,46 @@ export type Placed = {
   x: number
   y: number
   rotated: boolean
+  /** Facing the other way along its axis (west/north instead of east/south); for boxes, the other long side. */
+  flip?: boolean
   /** Standing on its end (compact). Only for types with an `upright` footprint. */
   upright?: boolean
+  /**
+   * Safe area for types with `situationalSafe` (plyo boxes): all around (default), `side` = one long side only,
+   * `direction` = both long sides (jump from one, land on the other).
+   */
+  safeMode?: 'side' | 'direction'
   /** Marked as not in use right now (put away); drawn see-through. */
   stored?: boolean
   /** Size on the floor, metres (x then y), for resizable types. Missing = the type's default. */
   w?: number
   h?: number
+}
+
+export type Facing = 'e' | 's' | 'w' | 'n'
+const FACING_STATE: Record<Facing, { rotated: boolean; flip: boolean }> = {
+  e: { rotated: false, flip: false },
+  s: { rotated: true, flip: false },
+  w: { rotated: false, flip: true },
+  n: { rotated: true, flip: true },
+}
+/** Which way the person using a directional machine faces (east when unrotated and not flipped). */
+export const facingOf = (p: Pick<Placed, 'rotated' | 'flip'>): Facing => (p.rotated ? (p.flip ? 'n' : 's') : p.flip ? 'w' : 'e')
+type Turn = { rotated: boolean; flip: boolean }
+/**
+ * Quarter turns clockwise, as (rotated, flip) states. Directional machines face east, south, west, north. A box with a
+ * situational safe area turns through south, west, north, east: its safe side is the long side it faces
+ * (south when lying along x, east once rotated; `flip` is the other long side).
+ */
+const TURNS_BOX: Turn[] = [{ rotated: false, flip: false }, { rotated: true, flip: true }, { rotated: false, flip: true }, { rotated: true, flip: false }]
+const TURNS_FACING: Turn[] = ['e', 's', 'w', 'n'].map((f) => FACING_STATE[f as Facing])
+/** Does this type turn in four quarter steps (instead of flipping between lengthways and across)? */
+export const turnsInQuarters = (type: EquipmentTypeId) => !!typeOf(type).directional || !!typeOf(type).situationalSafe
+/** The orientation after a quarter turn clockwise. */
+export function quarterTurn(type: EquipmentTypeId, p: { rotated: boolean; flip?: boolean }): Turn {
+  const seq = typeOf(type).situationalSafe ? TURNS_BOX : TURNS_FACING
+  const at = Math.max(0, seq.findIndex((t) => t.rotated === p.rotated && t.flip === !!p.flip))
+  return seq[(at + 1) % 4]
 }
 
 export type Rect = { x: number; y: number; w: number; h: number }
@@ -240,6 +278,15 @@ const clampRect = (r: Rect): Rect => {
 export function safeRect(p: Placed): Rect {
   const f = footprint(p)
   const { ends, sides, lane = 0 } = typeOf(p.type).safe
+  if (typeOf(p.type).situationalSafe && p.safeMode) {
+    // Long sides only: in x for a box lying along x, in y once rotated. `side` keeps just one of them.
+    const both = p.safeMode === 'direction'
+    const lo = both || !!p.flip ? sides : 0
+    const hi = both || !p.flip ? sides : 0
+    return p.rotated
+      ? clampRect({ x: f.x - lo, y: f.y, w: f.w + lo + hi, h: f.h })
+      : clampRect({ x: f.x, y: f.y - lo, w: f.w, h: f.h + lo + hi })
+  }
   if (!p.rotated) {
     const toRight = f.x + f.w / 2 < ROOM_W / 2
     return clampRect({ x: f.x - ends - (toRight ? 0 : lane), y: f.y - sides, w: f.w + 2 * ends + lane, h: f.h + 2 * sides })
@@ -250,17 +297,23 @@ export function safeRect(p: Placed): Rect {
 
 /** Depth in front of the rack (south of it) a person needs per station kind. */
 const RACK_SAFE_DEPTH: Record<StationKind, number> = { barbell: 2.0, pull: 1.4, pullup: 1.0 }
+/**
+ * Depths (m) a pull-up bay can claim in front of it: 1.0 for plain pull-ups, more when a TRX hangs from it (the
+ * person leans out and moves). Click a bay in use to step through them.
+ */
+export const PULLUP_REACHES = [1.0, 1.5, 2.0]
+
 /** A pull station is a thin pillar; the person stands about a metre wide in front of it. */
 const PULL_SAFE_WIDTH = 1.0
 
 /** Safe areas of the rack's parts. With `active`, only the parts (by index into `rack.parts`) that are in use. */
-export function rackSafeRects(rack: FixedEquipment = BLK_BOX_RACK, active?: number[]): Rect[] {
+export function rackSafeRects(rack: FixedEquipment = BLK_BOX_RACK, active?: number[], reach?: Record<number, number>): Rect[] {
   const out: Rect[] = []
   let x = rack.x
   rack.parts.forEach((part, i) => {
     const w = part.kind === 'pull' ? PULL_SAFE_WIDTH : part.width
     if (!active || active.includes(i))
-      out.push(clampRect({ x: x + part.width / 2 - w / 2, y: rack.y + rack.height, w, h: RACK_SAFE_DEPTH[part.kind] }))
+      out.push(clampRect({ x: x + part.width / 2 - w / 2, y: rack.y + rack.height, w, h: (part.kind === 'pullup' && reach?.[i]) || RACK_SAFE_DEPTH[part.kind] }))
     x += part.width
   })
   return out
@@ -296,8 +349,9 @@ export function rackPartAt(m: { x: number; y: number }, rack: FixedEquipment = B
 /** Throwing and landing space in front of a wall ball target: 1.8 m wide, 2.5 m out from the wall. */
 const WALL_BALL_SAFE = { along: 1.8, depth: 2.5 }
 
-export function wallBallSafeRects(): Rect[] {
-  return WALL_BALL_TARGETS.map((t) =>
+/** Throwing space of the switched-on targets (indices into WALL_BALL_TARGETS; all of them by default). */
+export function wallBallSafeRects(active?: number[]): Rect[] {
+  return WALL_BALL_TARGETS.filter((_, i) => !active || active.includes(i)).map((t) =>
     clampRect({
       x: t.x + t.width - WALL_BALL_SAFE.depth,
       y: t.y + t.height / 2 - WALL_BALL_SAFE.along / 2,
